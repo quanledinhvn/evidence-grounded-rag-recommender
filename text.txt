@@ -1,0 +1,3 @@
+./infra/skypilot/run.sh --region ap-southeast-2 --mode full
+
+sky down --yes it4613-cf-full

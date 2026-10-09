@@ -27,7 +27,7 @@ Mỗi đề tài nên có:
 
 | Thành phần | Lựa chọn phù hợp |
 |---|---|
-| Baseline truyền thống | Popularity, ItemKNN, BPR-MF, LightGCN |
+| Baseline truyền thống | Popularity, BPR-MF, LightGCN |
 | Gợi ý tuần tự | GRU4Rec, SASRec, BERT4Rec |
 | Retrieval | BM25, dense retrieval, LightGCN retrieval, graph retrieval |
 | LLM baseline | Zero-shot LLM, few-shot LLM, LLM có retrieval nhưng không có cơ chế cải tiến |

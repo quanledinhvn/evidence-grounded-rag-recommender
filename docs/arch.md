@@ -2,16 +2,16 @@
                      KIẾN TRÚC HỆ GỢI Ý RAG–LLM
                              
 ┌──────────────────────────────────────────────────────────────┐
-│        AMAZON DIGITAL MUSIC 5-CORE                           │
-│  user_id · item_id · rating · timestamp · review · metadata  │
+│        AMAZON REVIEWS 2023 — MOVIES AND TV                   │
+│  user_id · parent_asin · rating · timestamp · history        │
 └──────────────────────────────┬───────────────────────────────┘
                                │
                                ▼
 ┌──────────────────────────────────────────────────────────────┐
 │                     TIỀN XỬ LÝ DỮ LIỆU                       │
-│  • Làm sạch review                                           │
-│  • Sắp xếp tương tác theo thời gian                          │
-│  • Train / Validation / Test                                 │
+│  • Kiểm tra schema và giá trị                                │
+│  • Giữ timestamp mili-giây                                   │
+│  • Giữ nguyên Train / Validation / Test nguồn                │
 │  • Loại dữ liệu có nguy cơ rò rỉ                             │
 └───────────────┬──────────────────────────────┬───────────────┘
                 │                              │
@@ -27,7 +27,7 @@
 ┌───────────────────────────┐      ┌───────────────────────────┐
 │ COLLABORATIVE RETRIEVER   │      │  TEXT RETRIEVER – BM25   │
 │                           │      │                           │
-│ BPR-MF hoặc ItemKNN       │      │ Truy xuất theo hồ sơ     │
+│ BPR-MF                    │      │ Truy xuất theo hồ sơ     │
 │                           │      │ sở thích dạng văn bản    │
 │ → ứng viên + CF score     │      │ → ứng viên + BM25 score  │
 └─────────────┬─────────────┘      └─────────────┬─────────────┘
@@ -88,12 +88,12 @@
 ┌──────────────────────────────────────────────────────────────┐
 │                         KẾT QUẢ                              │
 │                                                              │
-│  Top-10 sản phẩm âm nhạc được gợi ý                          │
+│  Top-10 phim/chương trình được gợi ý                         │
 │  Top-3 có giải thích và trích dẫn bằng chứng                 │
 │                                                              │
 │  Ví dụ:                                                      │
-│  1. Album A – phù hợp với sở thích jazz nhẹ [E1][E3]         │
-│  2. Album B – tương tự các album từng đánh giá cao [E2]      │
+│  1. Movie A – phù hợp với sở thích phim trinh thám [E1][E3]  │
+│  2. Series B – tương tự nội dung từng đánh giá cao [E2]      │
 └──────────────────────────────────────────────────────────────┘
 ```
 

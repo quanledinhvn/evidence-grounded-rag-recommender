@@ -1,20 +1,22 @@
 # ĐỀ XUẤT ĐỀ TÀI
 
-## Hệ gợi ý âm nhạc cá nhân hóa có giải thích bằng RAG và LLM
+## Hệ gợi ý phim và chương trình truyền hình có giải thích bằng RAG và LLM
 
 ### 1. Mô tả bài toán thực tế
 
-Các nền tảng âm nhạc có số lượng bài hát và album rất lớn. Người dùng thường khó tìm được sản phẩm phù hợp với sở thích nếu chỉ tìm kiếm bằng tên hoặc thể loại. Vì vậy, hệ thống cần dựa vào lịch sử nghe và đánh giá để đưa ra danh sách gợi ý riêng cho từng người.
+Các nền tảng phim và chương trình truyền hình có danh mục rất lớn. Người dùng thường khó tìm được nội dung phù hợp nếu chỉ tìm kiếm bằng tên hoặc thể loại. Vì vậy, hệ thống cần dựa vào lịch sử đánh giá để đưa ra danh sách gợi ý riêng cho từng người.
 
 Tuy nhiên, một danh sách gợi ý đơn thuần chưa giúp người dùng hiểu vì sao sản phẩm đó phù hợp. Nếu dùng mô hình ngôn ngữ lớn để tạo lời giải thích, mô hình có thể đưa ra thông tin không có trong dữ liệu. Đề tài giải quyết hai yêu cầu chính: tìm đúng sản phẩm phù hợp và giải thích dựa trên bằng chứng có sẵn.
 
-Trong một kịch bản sử dụng, người dùng đã đánh giá một số album hoặc bài hát. Hệ thống phân tích lịch sử này, tìm các sản phẩm chưa được người dùng tương tác và trả về 10 gợi ý. Ba gợi ý đầu tiên có lời giải thích ngắn kèm nguồn thông tin liên quan.
+Trong một kịch bản sử dụng, người dùng đã đánh giá một số phim hoặc chương trình. Hệ thống phân tích lịch sử này, tìm các sản phẩm chưa được người dùng tương tác và trả về 10 gợi ý. Ba gợi ý đầu tiên có lời giải thích ngắn kèm nguồn thông tin liên quan.
 
-Mục đích của đề tài là xây dựng một hệ gợi ý âm nhạc nhỏ gọn, dễ chạy thử và có khả năng tạo kết quả rõ ràng, đáng tin cậy.
+Mục đích của đề tài là xây dựng một hệ gợi ý Movies and TV nhỏ gọn, dễ chạy thử và có khả năng tạo kết quả rõ ràng, đáng tin cậy.
 
 ### 2. Dữ liệu và phạm vi
 
-Đề tài sử dụng bộ dữ liệu Amazon Review Data 2018, nhóm Digital Music. Dữ liệu gồm mã người dùng, mã sản phẩm, số điểm đánh giá, thời gian đánh giá, nhận xét và thông tin mô tả sản phẩm.
+Đề tài sử dụng ba split Amazon Reviews 2023, nhóm Movies and TV, trong `dataset/2023/`. Dữ liệu hiện có gồm mã người dùng, `parent_asin`, rating, timestamp, lịch sử item và đã được chia train, validation, test.
+
+Ba CSV chưa chứa metadata hoặc review text. Do đó phần CF có thể chạy ngay; BM25 và lời giải thích có căn cứ cần chờ metadata/review Movies and TV tương thích được bổ sung và kiểm tra độ phủ.
 
 Hệ thống chỉ gợi ý các sản phẩm có trong dữ liệu và chưa được người dùng tương tác. Các nhận xét dùng làm bằng chứng phải có trước thời điểm cần đưa ra gợi ý để hạn chế việc sử dụng thông tin không phù hợp.
 
@@ -36,11 +38,11 @@ Quy trình của hệ thống gồm bốn bước.
 
 Đầu vào của hệ thống gồm mã người dùng, lịch sử đánh giá, thông tin sản phẩm và các nhận xét hợp lệ.
 
-Đầu ra là danh sách 10 sản phẩm âm nhạc được gợi ý. Ba sản phẩm đầu có lời giải thích ngắn và thông tin làm bằng chứng. Kết quả được lưu dưới dạng JSON hoặc CSV để thuận tiện cho việc kiểm tra và viết báo cáo.
+Đầu ra là danh sách 10 phim hoặc chương trình được gợi ý. Khi có kho bằng chứng hợp lệ, ba sản phẩm đầu có lời giải thích ngắn và thông tin làm bằng chứng. Kết quả được lưu dưới dạng JSON hoặc CSV để thuận tiện cho việc kiểm tra và viết báo cáo.
 
 ### 5. Kết quả kỳ vọng
 
-Đề tài dự kiến tạo ra một hệ thống có thể kết hợp lịch sử tương tác và nội dung văn bản để gợi ý âm nhạc. Hệ thống không chỉ đưa ra sản phẩm mà còn giải thích lý do lựa chọn dựa trên dữ liệu đã tìm thấy.
+Đề tài dự kiến tạo ra một hệ thống có thể kết hợp lịch sử tương tác và nội dung văn bản để gợi ý phim và chương trình truyền hình. Hệ thống không chỉ đưa ra sản phẩm mà còn giải thích lý do lựa chọn dựa trên dữ liệu đã tìm thấy.
 
 Sản phẩm cuối gồm mã nguồn, dữ liệu đã xử lý, cấu hình chạy thử và một bản minh họa kết quả gợi ý. Kết quả của đề tài có thể làm cơ sở để phát triển hệ gợi ý rõ ràng và đáng tin cậy hơn.
 
@@ -48,7 +50,7 @@ Sản phẩm cuối gồm mã nguồn, dữ liệu đã xử lý, cấu hình ch
 
 1. Liu, J. và cộng sự. *LLMRec: Benchmarking Large Language Models on Recommendation Task*, 2023. <https://arxiv.org/abs/2308.12241>
 
-2. Amazon Review Data 2018, Digital Music. <https://cseweb.ucsd.edu/~jmcauley/datasets/amazon_v2/>
+2. Amazon Reviews 2023, Movies and TV. <https://amazon-reviews-2023.github.io/main.html>
 
 ### Phụ lục: Giải thích thuật ngữ
 
