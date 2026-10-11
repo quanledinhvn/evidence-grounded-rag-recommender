@@ -31,11 +31,22 @@ Lệnh này đọc theo batch để phù hợp với file train lớn và tạo:
 - `catalog.parquet`: catalog ID hợp nhất từ cả ba split;
 - `split_stats.json`: số dòng, số user, hash nguồn và đường dẫn artifact.
 
-Importer kiểm tra header, ID rỗng, rating ngoài khoảng 1–5, timestamp không dương và trường hợp target xuất hiện trong chính `history`. Vì nguồn CSV không chứa review text hoặc metadata phim, các trường text trong artifact hiện để rỗng và `catalog_items_with_bm25_text` bằng 0.
+Importer kiểm tra header, ID rỗng, rating ngoài khoảng 1–5, timestamp không dương và trường hợp target xuất hiện trong chính `history`. Vì nguồn CSV không chứa review text hoặc metadata phim, `catalog.parquet` ban đầu chỉ có ID và `catalog_items_with_bm25_text` bằng 0.
 
 ## Metadata và RAG
 
-Không dùng `meta_Digital_Music.jsonl` cho catalog phim. Muốn chạy BM25, evidence retrieval hoặc sinh giải thích có căn cứ, cần bổ sung metadata/review Movies and TV cùng phiên bản Amazon Reviews 2023 và nối chính xác bằng `parent_asin`. Trước khi có nguồn đó, artifact chỉ đủ cho BPR-MF và Popularity.
+Metadata Movies and TV đã được giải nén tại `dataset/2023/meta_Movies_and_TV.jsonl`. Enrich catalog bằng phép nối chính xác `parent_asin` → `item_id`:
+
+```bash
+uv run recsys-data enrich-catalog \
+  --catalog artifacts/movies-tv-2023/catalog.parquet \
+  --metadata dataset/2023/meta_Movies_and_TV.jsonl \
+  --output artifacts/movies-tv-2023/catalog_enriched.parquet
+```
+
+Kết quả schema `catalog-enrichment-v2` hiện khớp đủ 197.943 item và được audit tại `catalog_enriched.stats.json`. Catalog giữ các field nội dung `title`, `subtitle`, `description`, `feature`, `main_category`, `category`, `details`; giữ `store`, `average_rating` và `rating_number` như thuộc tính phụ; đồng thời tạo `metadata_text` làm canonical document cho text index. `store` và hai thống kê rating không được ghép vào `metadata_text`.
+
+Dùng `catalog_enriched.parquet` cho Profile Builder, BM25, semantic search và metadata evidence. Review text Movies and TV vẫn chưa được import, vì vậy chưa có review evidence. Không dùng `meta_Digital_Music.jsonl` cho catalog phim.
 
 Các subcommand `audit`, `normalize`, `deduplicate`, `split` và `prepare` vẫn được giữ để hỗ trợ nguồn JSONL thô khác; chúng không phải đường xử lý mặc định của ba CSV hiện tại.
 

@@ -9,6 +9,7 @@ from typing import Any
 
 from backend.data.audit import audit_dataset, write_audit_report
 from backend.data.deduplicate import deduplicate_dataset
+from backend.data.enrich import enrich_catalog
 from backend.data.normalize import normalize_dataset
 from backend.data.presplit import import_pre_split_dataset
 
@@ -66,6 +67,16 @@ def main(argv: list[str] | None = None) -> int:
 
         return 0
 
+    if args.command == "enrich-catalog":
+        stats = enrich_catalog(
+            args.catalog,
+            args.metadata,
+            args.output,
+        )
+        _print_summary(stats)
+
+        return 0
+
     stats = _prepare(args)
     _print_summary(stats)
 
@@ -117,6 +128,14 @@ def _build_parser() -> argparse.ArgumentParser:
     import_splits.add_argument("--test", type=Path, required=True)
 
     import_splits.add_argument("--output-dir", type=Path, required=True)
+
+    enrich = subparsers.add_parser(
+        "enrich-catalog",
+        help="Join item metadata into an imported catalog by parent_asin",
+    )
+    enrich.add_argument("--catalog", type=Path, required=True)
+    enrich.add_argument("--metadata", type=Path, required=True)
+    enrich.add_argument("--output", type=Path, required=True)
 
     prepare = subparsers.add_parser(
         "prepare",

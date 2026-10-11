@@ -11,6 +11,7 @@ from pathlib import Path
 from backend.data.audit import audit_dataset
 from backend.data.cli import main as data_main
 from backend.data.deduplicate import deduplicate_dataset, deduplicate_rows
+from backend.data.enrich import enrich_catalog
 
 from backend.data.io import read_parquet, write_parquet
 
@@ -327,6 +328,132 @@ class PreSplitImportTests(unittest.TestCase):
             writer = csv.DictWriter(stream, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(rows)
+
+
+class CatalogEnrichmentTests(unittest.TestCase):
+    def test_enriches_only_catalog_ids_and_preserves_missing_items(self) -> None:
+        catalog = [
+            self._catalog_row("i1"),
+            self._catalog_row("i2"),
+            self._catalog_row("i3"),
+        ]
+        metadata = [
+            {"parent_asin": "outside", "title": "Not selected"},
+            {"parent_asin": "i1", "title": "Short title"},
+            {
+                "parent_asin": "i1",
+                "title": "Better title",
+                "subtitle": "Collector edition",
+                "main_category": "Drama",
+                "description": ["Mystery story"],
+                "features": ["IMDb 8.0"],
+                "categories": ["Drama", "Mystery"],
+                "store": "Example Studio",
+                "details": {
+                    "Actors": ["Actor One", "Actor Two"],
+                    "Directors": ["Director One"],
+                    "Product Dimensions": "1 x 2 inches",
+                },
+                "average_rating": 4.8,
+                "rating_number": 125,
+            },
+            {"parent_asin": "i2", "title": ""},
+        ]
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            catalog_path = root / "catalog.parquet"
+            metadata_path = root / "meta.jsonl"
+            output_path = root / "catalog_enriched.parquet"
+
+            write_parquet(catalog_path, catalog)
+            self._write_jsonl(metadata_path, metadata)
+
+            stats = enrich_catalog(catalog_path, metadata_path, output_path)
+            enriched = read_parquet(output_path)
+
+        by_id = {row["item_id"]: row for row in enriched}
+        self.assertEqual(set(by_id), {"i1", "i2", "i3"})
+        self.assertEqual(by_id["i1"]["title"], "Better title")
+
+        self.assertEqual(by_id["i1"]["main_category"], "Drama")
+        self.assertEqual(by_id["i1"]["category"], "Mystery")
+        self.assertIn("Mystery story", by_id["i1"]["metadata_text"])
+        self.assertIn("Actors: Actor One Actor Two", by_id["i1"]["details"])
+
+        self.assertNotIn("Product Dimensions", by_id["i1"]["details"])
+        self.assertNotIn("Example Studio", by_id["i1"]["metadata_text"])
+        self.assertNotIn("4.8", by_id["i1"]["metadata_text"])
+        self.assertEqual(by_id["i1"]["average_rating"], 4.8)
+
+        self.assertEqual(by_id["i1"]["rating_number"], 125)
+        self.assertEqual(by_id["i3"]["metadata_text"], "")
+
+        self.assertEqual(stats["catalog_items"], 3)
+        self.assertEqual(stats["matched_metadata_rows"], 3)
+        self.assertEqual(stats["duplicate_metadata_rows"], 1)
+
+        self.assertEqual(stats["catalog_items_with_text"], 1)
+        self.assertEqual(stats["catalog_items_without_text"], 2)
+        self.assertEqual(stats["field_coverage"]["details"], 1)
+        self.assertEqual(stats["field_coverage"]["subtitle"], 1)
+
+    def test_cli_enriches_catalog_and_writes_stats(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            catalog_path = root / "catalog.parquet"
+            metadata_path = root / "meta.jsonl"
+            output_path = root / "catalog_enriched.parquet"
+
+            write_parquet(catalog_path, [self._catalog_row("i1")])
+            self._write_jsonl(
+                metadata_path,
+                [{"parent_asin": "i1", "title": "Movie"}],
+            )
+
+            status = data_main(
+                [
+                    "enrich-catalog",
+                    "--catalog",
+                    str(catalog_path),
+                    "--metadata",
+                    str(metadata_path),
+                    "--output",
+                    str(output_path),
+                ]
+            )
+
+            output_exists = output_path.exists()
+            stats_exists = output_path.with_suffix(".stats.json").exists()
+
+        self.assertEqual(status, 0)
+        self.assertTrue(output_exists)
+        self.assertTrue(stats_exists)
+
+    @staticmethod
+    def _catalog_row(item_id: str) -> dict[str, object]:
+        return {
+            "item_id": item_id,
+            "title": None,
+            "subtitle": None,
+            "description": "",
+            "feature": "",
+            "main_category": "",
+            "category": "",
+            "store": "",
+            "details": "",
+            "metadata_text": "",
+            "average_rating": None,
+            "rating_number": None,
+            "source_id": None,
+            "source_line": None,
+        }
+
+    @staticmethod
+    def _write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
+        with path.open("w", encoding="utf-8") as stream:
+            for row in rows:
+                stream.write(json.dumps(row) + "\n")
 
 
 class AuditTests(unittest.TestCase):
