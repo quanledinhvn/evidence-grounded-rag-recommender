@@ -26,9 +26,10 @@
 | Test | 657.203 dòng |
 | Tổng | 7.441.129 dòng |
 | Schema | `user_id`, `parent_asin`, `rating`, `timestamp`, `history` |
-| Metadata/review text Movies and TV | Chưa có trong workspace |
+| Metadata Movies and TV | Đã enrich 197.943/197.943 item trong `catalog_enriched.parquet` |
+| Review text Movies and TV | Chưa được import |
 
-**Hệ quả:** có thể chạy CF trên các split có sẵn, nhưng chưa thể chạy BM25, evidence retrieval hoặc đánh giá giải thích. Hai file Digital Music còn trong thư mục không tương thích với Movies and TV và không được nối vào catalog phim.
+**Hệ quả:** có thể chạy CF và bắt đầu xây BM25/semantic index cùng metadata evidence trên catalog enriched. Review evidence và đánh giá giải thích dựa trên review chưa thể chạy. Các file Digital Music không tương thích với Movies and TV và không được nối vào catalog phim.
 
 **Cổng dữ liệu:** `import-splits` kiểm tra schema/giá trị, giữ nguyên split và xuất hash nguồn. Chỉ chạy so sánh hybrid khi metadata/review Movies and TV tương thích đã được audit và catalog thí nghiệm có text dùng được. Nếu chọn tập giao có metadata, phải lọc lại cả ba split và chạy lại **tất cả baseline trên cùng catalog**; chỉ có ID không được tính là metadata đủ dùng.
 

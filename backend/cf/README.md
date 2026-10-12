@@ -14,6 +14,17 @@ Production training/evaluation luôn chạy qua SkyPilot trên AWS. Local chỉ 
 unit test nhỏ. Full task tune bốn candidate trên mẫu cố định 50.000 validation
 query, dùng batch 256, rồi đánh giá model thắng trên full validation và test.
 
+## Lấy gợi ý cho một user
+
+```bash
+uv run recsys-cf recommend \
+  --bundle artifacts/cf-v1/test \
+  --user-id u17 \
+  --limit 10
+```
+
+Dùng `--seen-id <item_id>` nhiều lần để loại thêm các item khỏi kết quả.
+
 Nếu không truyền các tùy chọn `--*-candidates`, pipeline đánh giá đúng một cấu
 hình lấy từ `--factors`, `--learning-rate`, `--regularization` và `--epochs`.
 Các candidate và quyết định chọn được lưu trong `validation_metrics.csv`;

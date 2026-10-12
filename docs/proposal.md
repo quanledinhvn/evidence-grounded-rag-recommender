@@ -18,7 +18,7 @@ Câu hỏi nghiên cứu là: **hybrid retrieval có cải thiện chất lượ
 
 Pipeline giữ nguyên split nguồn, không chia lại. Pha validation chỉ fit trên train; sau khi khóa cấu hình, pha test fit lại trên train và validation. Hồ sơ người dùng và kho bằng chứng chỉ sử dụng dữ liệu thuộc split được phép và có timestamp trước thời điểm dự đoán.
 
-Ba CSV hiện tại chưa có metadata hoặc nội dung review. Vì vậy BPR-MF và Popularity là phạm vi chạy được ngay; BM25, RAG và đánh giá giải thích chỉ được kích hoạt sau khi bổ sung nguồn Movies and TV tương thích, audit độ phủ theo `parent_asin` và xây lại catalog. Metadata Digital Music không được dùng thay thế.
+Ba CSV không tự chứa metadata hoặc nội dung review. Metadata Movies and TV tương thích đã được nối chính xác theo `parent_asin` với coverage đầy đủ cho catalog 5-core, nên BM25, semantic search và metadata-grounded explanation có thể triển khai. Review-grounded explanation vẫn chờ review text Movies and TV. Metadata Digital Music không được dùng thay thế.
 
 Đề tài không fine-tune LLM, xây giao diện web hoàn chỉnh hay đánh giá với người dùng thật. LLM chỉ xử lý tập ứng viên nhỏ và không được sinh item ngoài danh mục truy xuất.
 

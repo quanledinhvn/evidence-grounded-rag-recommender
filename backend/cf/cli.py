@@ -42,6 +42,11 @@ def main(argv: list[str] | None = None) -> int:
 
         return 0
 
+    if args.command == "recommend":
+        _print_json(_run_recommendation(args))
+
+        return 0
+
     report = _run_pipeline(args)
     _print_json(report)
 
@@ -65,6 +70,15 @@ def _build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--queries", type=Path, required=True)
     evaluate.add_argument("--limit", type=int, choices=(50,), default=50)
     evaluate.add_argument("--batch-size", type=int, default=256)
+
+    recommend = subparsers.add_parser(
+        "recommend",
+        help="Return CF recommendations for one user from a saved bundle",
+    )
+    recommend.add_argument("--bundle", type=Path, required=True)
+    recommend.add_argument("--user-id", required=True)
+    recommend.add_argument("--seen-id", action="append", default=[])
+    recommend.add_argument("--limit", type=int, default=50)
 
     pipeline = subparsers.add_parser(
         "pipeline",
@@ -114,6 +128,16 @@ def _config_from_args(args: argparse.Namespace) -> BPRConfig:
         seed=args.seed,
         num_threads=args.num_threads,
         verify_negative_samples=args.verify_negative_samples,
+    )
+
+
+def _run_recommendation(args: argparse.Namespace) -> dict[str, Any]:
+    bundle = CFBundle.load(args.bundle)
+
+    return bundle.recommend(
+        args.user_id,
+        seen_ids=set(args.seen_id),
+        limit=args.limit,
     )
 
 

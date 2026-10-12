@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 import tempfile
 import unittest
 
+from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -525,6 +527,45 @@ class CFBundleTests(unittest.TestCase):
             set(locked_config["input_hashes"]),
             {"catalog", "splits", "validation_queries"},
         )
+
+    def test_recommend_cli_returns_recommendations_for_one_user(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            splits_path, catalog_path = self._write_dataset(root)
+            bundle_dir = root / "bundle"
+            output = io.StringIO()
+
+            train_bundle(
+                splits_path,
+                catalog_path,
+                bundle_dir,
+                phase="validation",
+                config=self._config(),
+            )
+
+            with redirect_stdout(output):
+                status = cf_main(
+                    [
+                        "recommend",
+                        "--bundle",
+                        str(bundle_dir),
+                        "--user-id",
+                        "u1",
+                        "--seen-id",
+                        "i3",
+                        "--limit",
+                        "2",
+                    ]
+                )
+
+        recommendation = json.loads(output.getvalue())
+        item_ids = {item["item_id"] for item in recommendation["items"]}
+
+        self.assertEqual(status, 0)
+        self.assertEqual(recommendation["status"], "ok")
+        self.assertNotIn("i1", item_ids)
+        self.assertNotIn("i2", item_ids)
+        self.assertNotIn("i3", item_ids)
 
     @staticmethod
     def _config() -> BPRConfig:
