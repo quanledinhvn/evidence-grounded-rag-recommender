@@ -1,6 +1,6 @@
 # Kiến trúc hệ gợi ý phim và chương trình truyền hình RAG–LLM
 
-> **Trạng thái:** pipeline nhập dữ liệu và CF đã có trong `backend/`; BM25, evidence store, LLM và API còn là thiết kế đề xuất để triển khai [proposal.md](proposal.md). Phạm vi: pipeline thí nghiệm + FastAPI server + CLI; không yêu cầu web, microservice hay fine-tune LLM.
+> **Trạng thái:** pipeline nhập dữ liệu, Profile Builder và CF (ItemKNN là nhánh chính, BPR-MF là baseline; kết quả ở mục 6 của [overview.md](overview.md)) đã có trong `backend/`; BM25, embedding, fusion, evidence store, LLM và API còn là thiết kế đề xuất để triển khai [proposal.md](proposal.md). Phạm vi: pipeline thí nghiệm + FastAPI server + CLI; không yêu cầu web, microservice hay fine-tune LLM.
 
 **Hợp đồng chính:** nhận `user_id` + `as_of`, trả tối đa 10 sản phẩm Movies and TV chưa tương tác; giải thích tối đa ba sản phẩm đầu bằng nguồn truy xuất được. Item là `parent_asin`, có thể đại diện cho phim, chương trình hoặc một sản phẩm phát hành liên quan. LLM chỉ xếp hạng item đã truy xuất.
 
@@ -9,7 +9,7 @@
 | Nội dung | Đánh giá / quyết định |
 |---|---|
 | Tách retrieval, rerank, explanation | Giữ; đo riêng chất lượng và chi phí từng khâu |
-| CF + BM25 | Giữ; BPR-MF chính, Popularity fallback; BM25 dùng metadata tĩnh |
+| CF + BM25 | Giữ; ItemKNN có trọng số độ gần đây là CF chính (BPR-MF thua ItemKNN 3,7 lần NDCG@10, giữ làm baseline), Popularity fallback; BM25 và embedding dùng metadata tĩnh |
 | Chống rò rỉ dữ liệu | Chốt `timestamp < as_of` cho mọi history/review; tie-break không cho phép dùng sự kiện cùng timestamp |
 | Hợp đồng module | Bổ sung kiểu dữ liệu, input/output và điều kiện nghiệm thu |
 | Độ tin cậy LLM | Kiểm tra schema/ID/citation khi chạy; chấm claim–evidence riêng trong đánh giá |
@@ -180,7 +180,7 @@ sequenceDiagram
 
 **Q1:** rating 3 là trung tính, vẫn thuộc seen. BM25 query chỉ lấy từ item thích, không ghép keyword của item ghét như tín hiệu dương. Tokenizer/lowercase/stopword giống khi xây index. Profile rỗng không được làm BM25 trả các item điểm 0 tùy ý.
 
-**Q2:** BPR-MF học positive từ rating ≥4; backend `implicit` sample negative
+**Q2:** ItemKNN (nhánh CF chính) cộng cosine giữa item ứng viên và từng item trong lịch sử thuộc split được phép, trọng số $\gamma^{k}$ theo vị trí $k$ tính từ tương tác mới nhất; item không có điểm dương được bổ sung theo popularity. Chi tiết ở [backend/cf/README.md](../backend/cf/README.md#itemknn). BPR-MF (baseline) học positive từ rating ≥4; backend `implicit` sample negative
 trong catalog ngoài tập positive **ở tập fit**, không đọc held-out để chọn
 negative. Item rating ≤3 có thể được sample làm negative nhưng vẫn bị lọc khỏi
 recommendation theo history. Item không có embedding vẫn có thể được BM25 lấy;
@@ -319,7 +319,7 @@ Lưu cả output trước/sau validator cho E/F để đo tác động lọc. So
 
 ## 7. Cấu trúc triển khai và kế hoạch nghiệm thu
 
-Cấu trúc dưới đây là **đề xuất**, chưa phải file đã tồn tại:
+Cấu trúc dưới đây là **đề xuất**. Hiện đã có `backend/data/` (nhập split, enrich catalog), `backend/profile/` (Profile Builder) và `backend/cf/` (ItemKNN, BPR-MF, popularity, evaluator, CLI `recsys-cf`); các phần còn lại chưa tồn tại:
 
 ```text
 backend/
@@ -343,9 +343,9 @@ tests/                      # kiểm tra hợp đồng, leakage và fallback
 
 | Mốc | Input bắt buộc | Công việc | Output bàn giao | Tiêu chí nghiệm thu |
 |---|---|---|---|---|
-| M0 — Đầu tuần 1 | Raw review + metadata | Audit, xác minh nguồn, chốt catalog | `data_quality.json`, quyết định dữ liệu | Xử lý rõ độ phủ 1,57%; không chạy hybrid trên catalog ngầm thay đổi |
+| M0 — Đầu tuần 1 | Raw review + metadata | Audit, xác minh nguồn, chốt catalog | `data_quality.json`, quyết định dữ liệu | Đã xong: metadata phủ 197.943/197.943 item (`catalog_enriched.stats.json`); không chạy hybrid trên catalog ngầm thay đổi |
 | M1 — Tuần 1 | Catalog đã chốt + raw | Normalize, deduplicate, split, schema | Bảng dữ liệu, query/target riêng, manifest | Không lặp user–item; history cùng timestamp target bị loại; không test trong bundle |
-| M2 — Tuần 1 | Train + validation | Popularity, CF, evaluator | Model + `baseline_metrics.csv` | Một query → top K chưa thấy; metric tính đúng trên ví dụ biết trước |
+| M2 — Tuần 1 | Train + validation | Popularity, CF, evaluator | Model + `baseline_metrics.csv` | Đã xong (ItemKNN, BPR-MF, Popularity): một query → top K chưa thấy; metric tính đúng trên ví dụ biết trước |
 | M3 — Tuần 2 | Catalog + CF + store | BM25, fusion, evidence | Bundle validation + trace truy xuất | Top 50/20 xác định; evidence đúng item/split/thời gian; kiểm tra item thiếu embedding |
 | M4 — Tuần 3 | Pool/evidence + LLM config | Rerank, explanation, validator, FastAPI + CLI | POST /recommend → JSON; /health và Swagger demo | API/CLI cùng hợp đồng; readiness/config lỗi đúng status; ID lạ/trùng, timeout, review chứa instruction không phá đầu ra |
 | M5 — Tuần 3 | Config/prompt đã khóa | Refit test, chạy A–F, kiểm tra thủ công | Predictions JSONL, metrics CSV, báo cáo, lệnh demo | Cùng mẫu so sánh; đủ ranking/support/coverage/cost; replay bằng artifact và cache |

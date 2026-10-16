@@ -2,7 +2,7 @@
 
 > **Trạng thái:** profile core P1 đã được cài đặt trong `backend/profile/` và kiểm thử tại `tests/test_profile_builder.py`. Tích hợp CF P2, BM25 P3, semantic search P4 và fusion P5 chưa được cài đặt. Profile Builder không phải model cần huấn luyện.
 >
-> Tài liệu này chi tiết hóa và thay thế contract `Profile`/Q1 hiện có trong `architecture.md`. Trước khi triển khai, P0 phải đồng bộ lại tài liệu kiến trúc tổng thể để không còn dùng schema cũ có `positive_terms`.
+> Tài liệu này chi tiết hóa và thay thế contract `Profile`/Q1 hiện có trong [architecture.md](../architecture.md). Trước khi triển khai, P0 phải đồng bộ lại tài liệu kiến trúc tổng thể để không còn dùng schema cũ có `positive_terms`.
 
 ## 1. Mục tiêu và quyết định kiến trúc
 

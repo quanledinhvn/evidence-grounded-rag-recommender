@@ -3,6 +3,8 @@
 Tài liệu có hai phần. **Phần I** giải thích lý thuyết và ví dụ mà chưa yêu cầu người đọc biết cấu trúc code. **Phần II** mới ánh xạ từng khái niệm vào file, hàm và dòng code của dự án.
 
 > Số dòng khớp với code tại thời điểm viết. Khi code thay đổi, hãy tìm tên hàm được ghi kèm thay vì chỉ dựa vào số dòng.
+>
+> Hướng dẫn này chỉ nói về BPR-MF và Popularity. ItemKNN, nhánh CF chính hiện nay, được mô tả trong [backend/cf/README.md](../../backend/cf/README.md#itemknn); kết quả so sánh nằm ở mục 6 của [overview.md](../overview.md).
 
 # Phần I Lý thuyết nền tảng
 
