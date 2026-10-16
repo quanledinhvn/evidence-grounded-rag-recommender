@@ -20,6 +20,7 @@ dev = ["pytest>=8,<10"]
 [project.scripts]
 recsys-data = "backend.data.cli:main"
 recsys-cf = "backend.cf.cli:main"
+recsys-item-knn = "backend.item_knn.cli:main"
 recsys-profile = "backend.profile.cli:main"
 
 [tool.setuptools.packages.find]

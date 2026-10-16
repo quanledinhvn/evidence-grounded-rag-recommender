@@ -11,3 +11,26 @@ uv run recsys-profile build \
   --phase test \
   --artifact-version movies-tv-2023 \
   --output artifacts/profile.json
+
+
+uv run recsys-item-knn train \
+  --splits artifacts/movies-tv-2023/splits.parquet \
+  --catalog artifacts/movies-tv-2023/catalog.parquet \
+  --output-dir artifacts/item-knn/validation \
+  --phase validation \
+  --neighbors 50 \
+  --num-threads 0
+
+uv run recsys-item-knn evaluate \
+  --bundle artifacts/item-knn/validation \
+  --queries artifacts/movies-tv-2023/queries_val.parquet
+
+uv run recsys-item-knn recommend \
+  --bundle artifacts/item-knn/validation \
+  --user-id AGXVBIUFLFGMVLATYXHJYL4A5Q7Q \
+  --limit 10
+
+./infra/skypilot/run-item-knn.sh \
+  --region ap-southeast-1 \
+  --phase test \
+  --neighbors 51

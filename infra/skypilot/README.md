@@ -21,6 +21,8 @@ secret key hoặc session token vào repository.
 
 ## Chạy
 
+### BPR-MF
+
 Chạy grid đầy đủ trong region Sydney:
 
 ```bash
@@ -39,6 +41,41 @@ Chạy smoke-train một epoch trên positive CSR đầy đủ, không chạy ev
 ```bash
 ./infra/skypilot/run.sh --region ap-southeast-2 --mode check
 ```
+
+### Item-KNN độc lập
+
+Train test bundle bằng 50 phần tử similarity mỗi item và đánh giá trên test
+query:
+
+```bash
+./infra/skypilot/run-item-knn.sh \
+  --region ap-southeast-2 \
+  --phase test \
+  --neighbors 50
+```
+
+Train validation bundle và đánh giá trên validation query:
+
+```bash
+./infra/skypilot/run-item-knn.sh \
+  --region ap-southeast-2 \
+  --phase validation \
+  --neighbors 50
+```
+
+`--neighbors` là số phần tử similarity tối đa mỗi item và có tính cả
+self-similarity. Task Item-KNN không train hoặc load BPR. Bundle, evaluation,
+log và marker được lưu tại:
+
+```text
+s3://<bucket>/runs/item-knn-movies-tv-2023/<phase>/<run-id>/
+```
+
+Runner dùng On-Demand và `--down`; cluster tự hạ sau khi task kết thúc. Nếu
+train hoặc evaluation lỗi bình thường, prefix S3 nhận marker `FAILED` và giữ
+các artifact đã tạo được. Chạy lại lệnh tạo run ID mới, nên không ghi đè lượt
+trước. Task yêu cầu đúng 32 vCPU; region mặc định của runner là Singapore
+(`ap-southeast-1`).
 
 `--region` là AWS region; SkyPilot tự chọn availability zone khả dụng trong
 region đó. `--mode` chọn task `full` hoặc `check`. Nếu bỏ qua, giá trị mặc định
