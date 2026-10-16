@@ -118,7 +118,7 @@ ItemKNN (`backend/cf/itemknn.py`, xem [backend/cf/README.md](../backend/cf/READM
 | 400 | 0,0569 | 0,0586 | **0,0586** | 0,0489 |
 | 1600 | 0,0572 | 0,0590 | 0,0591 | 0,0493 |
 
-Giá trị trong bảng là NDCG@10. Cấu hình 400/0,7 có Recall@50 = 0,134, gần bằng 1600/0,7 (0,138) nhưng ma trận tương đồng nhỏ hơn 2,4 lần. Bỏ trọng số độ gần đây làm NDCG giảm khoảng 17%.
+Giá trị trong bảng là NDCG@10. Cấu hình 400/0,7 có Recall@50 = 0,134, gần bằng 1600/0,7 (0,138) nhưng ma trận tương đồng nhỏ hơn 2,4 lần. Cột $\gamma = 1$ là thí nghiệm ablation không dùng trọng số độ gần đây: NDCG giảm khoảng 17% so với $\gamma = 0{,}7$, nên cấu hình chốt giữ trọng số này.
 
 Hai tín hiệu bổ sung, đo trên 20.000 query (seed 42):
 

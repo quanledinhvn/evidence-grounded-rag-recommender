@@ -59,7 +59,7 @@ Kết quả trên toàn bộ 657.203 query test:
 
 Phát hiện dùng cho bước tiếp theo (đo trên 20.000 query validation, seed 42):
 
-- Trọng số theo độ gần đây quan trọng: bỏ đi làm NDCG của ItemKNN giảm khoảng 17%.
+- Trọng số theo độ gần đây là thành phần quan trọng của ItemKNN và được giữ trong cấu hình chốt ($\gamma = 0{,}7$). Thí nghiệm ablation: nếu không dùng nó ($\gamma = 1$, mọi item trong lịch sử ngang nhau) thì NDCG@10 giảm khoảng 17% (0,0586 → 0,0489 với 400 hàng xóm).
 - ItemKNN + $\lambda \cdot$ prior popularity theo thứ hạng: $\lambda = 0{,}3$ cho NDCG 0,0585 → 0,0688 và Recall@50 0,134 → 0,179. Recent popularity 30 ngày đứng riêng đạt khoảng 2,5 lần BPR.
 - BPR yếu vì bỏ qua thứ tự thời gian, chưa hội tụ (AUC còn tăng ở epoch 60) và dữ liệu thưa.
 
