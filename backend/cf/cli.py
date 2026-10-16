@@ -10,6 +10,13 @@ from typing import Any
 from backend.cf.bpr import BPRConfig, config_to_dict
 from backend.cf.bundle import CFBundle, train_bundle
 from backend.cf.evaluation import compare_retrievers, evaluate_bundle
+from backend.cf.itemknn import (
+    ITEMKNN_SCHEMA_VERSION,
+    ItemKNNBundle,
+    ItemKNNConfig,
+    evaluate_itemknn,
+    train_itemknn_bundle,
+)
 from backend.cf.tuning import select_bpr_config
 from backend.data.io import source_sha256
 
@@ -44,6 +51,39 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "recommend":
         _print_json(_run_recommendation(args))
+
+        return 0
+
+    if args.command == "train-itemknn":
+        knn_bundle = train_itemknn_bundle(
+            args.splits,
+            args.catalog,
+            args.output_dir,
+            phase=args.phase,
+            config=ItemKNNConfig(
+                neighbors=args.neighbors,
+                recency_decay=args.recency_decay,
+                min_rating=args.min_rating,
+            ),
+        )
+        _print_json(knn_bundle.manifest)
+
+        return 0
+
+    if args.command == "evaluate-itemknn":
+        knn_report = evaluate_itemknn(
+            ItemKNNBundle.load(args.bundle),
+            args.queries,
+            batch_size=args.batch_size,
+            query_limit=args.query_limit,
+            query_seed=args.seed,
+        )
+
+        if args.output is not None:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            _write_json(args.output, knn_report)
+
+        _print_json(knn_report)
 
         return 0
 
@@ -95,6 +135,27 @@ def _build_parser() -> argparse.ArgumentParser:
     pipeline.add_argument("--tuning-query-limit", type=int, default=50_000)
     pipeline.add_argument("--evaluation-batch-size", type=int, default=256)
 
+    train_itemknn = subparsers.add_parser(
+        "train-itemknn",
+        help="Build one ItemKNN validation or test bundle",
+    )
+    _add_training_paths(train_itemknn)
+    train_itemknn.add_argument("--phase", choices=("validation", "test"), required=True)
+    train_itemknn.add_argument("--neighbors", type=int, default=100)
+    train_itemknn.add_argument("--recency-decay", type=float, default=0.5)
+    train_itemknn.add_argument("--min-rating", type=float, default=1.0)
+
+    evaluate_itemknn = subparsers.add_parser(
+        "evaluate-itemknn",
+        help="Evaluate a saved ItemKNN bundle",
+    )
+    evaluate_itemknn.add_argument("--bundle", type=Path, required=True)
+    evaluate_itemknn.add_argument("--queries", type=Path, required=True)
+    evaluate_itemknn.add_argument("--batch-size", type=int, default=256)
+    evaluate_itemknn.add_argument("--query-limit", type=int)
+    evaluate_itemknn.add_argument("--seed", type=int, default=42)
+    evaluate_itemknn.add_argument("--output", type=Path)
+
     return parser
 
 
@@ -132,6 +193,15 @@ def _config_from_args(args: argparse.Namespace) -> BPRConfig:
 
 
 def _run_recommendation(args: argparse.Namespace) -> dict[str, Any]:
+    manifest = json.loads((args.bundle / "manifest.json").read_text(encoding="utf-8"))
+
+    if manifest.get("schema_version") == ITEMKNN_SCHEMA_VERSION:
+        return ItemKNNBundle.load(args.bundle).recommend(
+            args.user_id,
+            seen_ids=set(args.seen_id),
+            limit=args.limit,
+        )
+
     bundle = CFBundle.load(args.bundle)
 
     return bundle.recommend(
