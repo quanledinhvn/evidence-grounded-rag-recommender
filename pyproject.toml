@@ -23,6 +23,7 @@ dev = ["pytest>=8,<10"]
 recsys-data = "backend.data.cli:main"
 recsys-cf = "backend.cf.cli:main"
 recsys-profile = "backend.profile.cli:main"
+recsys-evidence = "backend.evidence.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["backend*"]
