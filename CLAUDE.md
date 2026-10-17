@@ -69,6 +69,12 @@ Mọi model (ItemKNN, BPR, BM25, Dense, Fusion, Popularity) có cùng giao diệ
 - Đánh giá luôn lấy 50 item mỗi query; `recommend` giới hạn `limit ≤ 50`.
 - Item được đánh số theo `item_id` tăng dần; điểm bằng nhau thì phá hòa theo `item_id`.
 
+## Quy ước báo cáo
+
+- Metric viết dạng **%**: NDCG@10 4,91%, HR@10 7,68%, Recall@50 11,9% (dấu phẩy thập phân). Mức thay đổi tương đối ghi rõ là tương đối, ví dụ "+14% so với ItemKNN".
+- Trọng số fusion viết dạng **% tổng 100%**, ví dụ ItemKNN 47,6%, BM25 4,8%, popularity 47,6%. Chỉ tỉ lệ giữa các trọng số ảnh hưởng thứ hạng; CLI nhận giá trị tương đối (`--weight itemknn=1 --weight bm25=0.1 --weight popularity=1` tương đương 47,6% / 4,8% / 47,6%). % trọng số **không** phải tỉ lệ ảnh hưởng thực tế lên thứ hạng; muốn đo đóng góp thì dùng ablation.
+- Mỗi bảng ghi rõ tập và cỡ mẫu (toàn bộ test, mẫu 50k test, mẫu 10k/20k validation).
+
 ## Hướng dẫn chạy test các phần đã implement
 
 Ví dụ xuyên suốt là một user thật: `AGXVBIUFLFGMVLATYXHJYL4A5Q7Q`. Lịch sử của user này có 7 phim ở train (2006–2017), một phim ở validation là **Harry Potter phần 1** (`B002DQDV6Y`, xem lúc `1530556502815`), và target test là **Harry Potter phần 3** (`B00271DNP4`, `as_of = 1530556520803`, tức 18 giây sau).
@@ -208,7 +214,8 @@ python -m backend.cf.cli fuse --member itemknn=runs/itemknn-movies-tv-2023/test 
   3. `method rrf`: chỉ dùng hạng, $w_m / (60 + r)$. Đã thử và không vượt ItemKNN, giữ lại để so sánh.
   4. `tune-fusion` tính danh sách của từng nhánh một lần rồi thử mọi tổ hợp trọng số trên cùng một mẫu query validation.
 - **Output:** bảng mọi tổ hợp (tốt nhất trước); thư mục fusion chỉ chứa `config.json` (nhánh nào, trọng số, method, depth). Kết quả gợi ý có thêm `members`: nhánh nào đã tìm ra phim đó.
-- **Ví dụ:** trên 10k query validation, ItemKNN đứng riêng NDCG@10 0,0603 → fusion (itemknn 1, bm25 0,1, popularity 1,0) 0,0696.
+- **Ví dụ:** trên 10k query validation, ItemKNN đứng riêng NDCG@10 6,03% → fusion (ItemKNN 47,6%, BM25 4,8%, popularity 47,6%) 6,96%. Trên toàn bộ test: 4,91% → 5,60%.
+- **Trọng số:** CLI nhận giá trị tương đối (1 / 0,1 / 1); trong báo cáo viết dạng % tổng 100% (47,6% / 4,8% / 47,6%).
 
 ### 8. Kho review — `recsys-data import-reviews`
 
@@ -252,9 +259,9 @@ Các mục dưới đây thay đổi theo thời gian; phần trên là thông t
 | ② ItemKNN | Nhánh CF chính: "người xem A thường xem B", ưu tiên phim vừa xem; `because` cho sẵn bằng chứng. | Xong, đã tune và đánh giá |
 | ② BPR-MF | Baseline học máy cổ điển (run B). | Xong |
 | Popularity | Mốc thấp nhất (run A) và nhánh trong fusion. | Xong |
-| ② BM25 | Phim chung **từ hiếm** (đạo diễn, diễn viên, thể loại) với phim user thích (run C). | Xong; validation NDCG@10 0,0165 |
-| ② Embedding (Dense) | Phim giống về **ý nghĩa** dù khác từ (run D). | Xong; validation NDCG@10 0,0140 (vector đã tính, `item_vectors.npy`) |
-| ③ Fusion | Trộn các nhánh thành 50 ứng viên; kỳ vọng tốt hơn nhánh tốt nhất (run E). | Xong; fusion theo điểm +15% NDCG trên validation; đang đánh giá trên test |
+| ② BM25 | Phim chung **từ hiếm** (đạo diễn, diễn viên, thể loại) với phim user thích (run C). | Xong; validation NDCG@10 1,65% |
+| ② Embedding (Dense) | Phim giống về **ý nghĩa** dù khác từ (run D). | Xong; validation NDCG@10 1,40% (vector đã tính, `item_vectors.npy`) |
+| ③ Fusion | Trộn các nhánh thành 50 ứng viên; kỳ vọng tốt hơn nhánh tốt nhất (run E). | Xong; test NDCG@10 5,60% (+14% so với ItemKNN) |
 | Đánh giá | Đo khách quan, cùng một giao thức cho mọi run A–G. | Xong |
 | Kho review | 9,25 triệu review làm nguồn bằng chứng ý kiến. | Xong |
 | ④ Gói bằng chứng | Đưa cho LLM chỉ những gì có nguồn: [H#] lịch sử, [E#] metadata và review trước `as_of`. | Xong, đã chạy thử |
@@ -265,35 +272,40 @@ Kết quả trên toàn bộ 657.203 query test:
 
 | Phương pháp | NDCG@10 | HR@10 | Recall@50 |
 |---|---:|---:|---:|
-| Popularity | 0,0091 | 0,0171 | 0,045 |
-| BPR-MF (64 factors, 60 epoch) | 0,0131 | 0,0227 | 0,045 |
-| ItemKNN (400 hàng xóm, $\gamma = 0{,}7$) | 0,0491 | 0,0768 | 0,119 |
+| Popularity | 0,91% | 1,71% | 4,5% |
+| BPR-MF (64 factors, 60 epoch) | 1,31% | 2,27% | 4,5% |
+| ItemKNN (400 hàng xóm, $\gamma = 0{,}7$) | 4,91% | 7,68% | 11,9% |
+| **Fusion theo điểm** (ItemKNN 47,6%, BM25 4,8%, popularity 47,6%) | **5,60%** | **8,99%** | **14,2%** |
+| BM25 | đang chạy | | |
+| Dense (mẫu 50k test) | đang chạy | | |
+
+Fusion so với ItemKNN trên toàn bộ test: NDCG@10 +14%, HR@10 +17%, Recall@50 +19% (tương đối) — khớp mức tăng trên validation (+15% NDCG, +19% Recall@50), nên cấu hình tune trên validation đứng vững. Đánh đổi: độ phủ catalog trong top 50 giảm từ 99,8% (ItemKNN) xuống 92,6% vì prior popularity kéo gợi ý về phim phổ biến.
 
 Kết quả trên 20.000 query validation (seed 42), model pha validation:
 
 | Nhánh (run) | NDCG@10 | HR@10 | Recall@50 | Thời gian/user |
 |---|---:|---:|---:|---:|
-| Popularity (A) | 0,0111 | 0,0214 | 0,052 | 0,3 ms |
-| Dense — MiniLM-L6, 64 token (D) | 0,0140 | 0,0286 | 0,054 | 8,4 ms |
-| BM25 — 50 từ truy vấn (C) | 0,0165 | 0,0344 | 0,076 | 3,4 ms |
-| ItemKNN (B) | 0,0586 | 0,0895 | 0,134 | ~3 ms |
-| Fusion RRF, tốt nhất trong 64 tổ hợp | 0,0586 | 0,0895 | 0,134 | — |
-| **Fusion theo điểm (E)**: itemknn 1, bm25 0,1, popularity 1,0 — mẫu 10k | **0,0696** | — | **0,160** | — |
+| Popularity (A) | 1,11% | 2,14% | 5,2% | 0,3 ms |
+| Dense — MiniLM-L6, 64 token (D) | 1,40% | 2,86% | 5,4% | 8,4 ms |
+| BM25 — 50 từ truy vấn (C) | 1,65% | 3,44% | 7,6% | 3,4 ms |
+| ItemKNN (B) | 5,86% | 8,95% | 13,4% | ~3 ms |
+| Fusion RRF, tốt nhất trong 64 tổ hợp | 5,86% | 8,95% | 13,4% | — |
+| **Fusion theo điểm (E)**: ItemKNN 47,6%, BM25 4,8%, popularity 47,6% — mẫu 10k | **6,96%** | — | **16,0%** | — |
 
 Đứng riêng, hai nhánh nội dung chỉ nhỉnh hơn Popularity; ItemKNN vượt trội vì "phim xem tiếp" phụ thuộc mạnh vào hành vi đám đông và thứ tự thời gian. Giá trị của BM25/Dense nằm ở chỗ **bổ sung** phim mà ItemKNN bỏ sót, đo bằng fusion.
 
-**Fusion RRF (kết quả âm):** grid 64 tổ hợp trọng số (bm25, dense, popularity ∈ {0; 0,25; 0,5; 1}, itemknn = 1) — tổ hợp tốt nhất là ItemKNN đứng riêng; thêm nhánh nào cũng làm NDCG@10 giảm (bm25 0,25 → 0,0574; dense 0,25 → 0,0566; popularity 0,25 → 0,0544) và Recall@50 gần như không đổi. Hai lý do: RRF chỉ dùng hạng nên bỏ mất độ tự tin của ItemKNN; mỗi nhánh chỉ góp top 50 nên phim mới hầu như không vào được top 50 (hạng 1 của BM25 ở trọng số 0,25 được 0,25/61 < 1/110 của hạng 50 ItemKNN). Ngược lại, cộng prior popularity vào **điểm** ItemKNN trên toàn bộ ứng viên từng tăng NDCG 18% → thử fusion theo điểm, danh sách sâu hơn.
+**Fusion RRF (kết quả âm):** grid 64 tổ hợp trọng số (bm25, dense, popularity ∈ {0; 0,25; 0,5; 1}, itemknn = 1) — tổ hợp tốt nhất là ItemKNN đứng riêng; thêm nhánh nào cũng làm NDCG@10 giảm (bm25 0,25 → 5,74%; dense 0,25 → 5,66%; popularity 0,25 → 5,44%) và Recall@50 gần như không đổi. Hai lý do: RRF chỉ dùng hạng nên bỏ mất độ tự tin của ItemKNN; mỗi nhánh chỉ góp top 50 nên phim mới hầu như không vào được top 50 (hạng 1 của BM25 ở trọng số 0,25 được 0,25/61 < 1/110 của hạng 50 ItemKNN). Ngược lại, cộng prior popularity vào **điểm** ItemKNN trên toàn bộ ứng viên từng tăng NDCG 18% → thử fusion theo điểm, danh sách sâu hơn.
 
-**Fusion theo điểm (cấu hình chốt):** điểm mỗi nhánh chia cho điểm cao nhất của nhánh đó với user, cộng $w_{pop} \cdot (1 - \text{hạng popularity}/N)$, mỗi nhánh góp 200 ứng viên. Grid 45 tổ hợp trên 10k query validation: ItemKNN đứng riêng 0,0603 / 0,135 → + popularity 1,0: 0,0693 / 0,161 → + BM25 0,1: **0,0696 / 0,160** (chọn). Gần như toàn bộ mức tăng (+15% NDCG, +19% Recall@50) đến từ prior popularity; BM25/Dense chỉ thêm ~0,0003, nhỏ hơn sai số mẫu. Kết luận cho báo cáo: với bài toán "phim xem tiếp", nhánh nội dung hầu như không tăng độ chính xác; giá trị của chúng là bằng chứng và giải thích.
+**Fusion theo điểm (cấu hình chốt):** điểm mỗi nhánh chia cho điểm cao nhất của nhánh đó với user, cộng $w_{pop} \cdot (1 - \text{hạng popularity}/N)$, mỗi nhánh góp 200 ứng viên. Grid 45 tổ hợp trên 10k query validation: ItemKNN đứng riêng 6,03% / 13,5% → + popularity 1,0: 6,93% / 16,1% → + BM25 0,1: **6,96% / 16,0%** (chọn). Gần như toàn bộ mức tăng (+15% NDCG, +19% Recall@50) đến từ prior popularity; BM25/Dense chỉ thêm ~0,03%, nhỏ hơn sai số mẫu. Kết luận cho báo cáo: với bài toán "phim xem tiếp", nhánh nội dung hầu như không tăng độ chính xác; giá trị của chúng là bằng chứng và giải thích.
 
-**Embedding xếp lại trong pool (kết quả âm, 17/10):** thay vì tìm trên toàn catalog bằng vector trung bình, cộng $w \cdot \cos(\text{phim vừa thích}, j)$ (hoặc max có trọng số trên 3 phim thích gần nhất) vào điểm fusion của các ứng viên. Cùng mẫu 10k validation: mốc 0,0696 / 0,1604; tốt nhất $w = 0{,}25$ (phim vừa thích) 0,0699 / 0,1594 — tăng 0,0003, nhỏ hơn sai số mẫu (~±0,002), Recall@50 giảm; $w \ge 0{,}5$ giảm rõ. Không đưa vào fusion. Lý do: ItemKNN đã nắm tín hiệu "phim vừa xem"; `item_doc` của nhiều phim chỉ có tên người. Ví dụ user mẫu: embedding trung bình đặt Harry Potter 3 ở hạng 5.298, dùng riêng phim vừa xem → hạng 37, trong khi ItemKNN xếp hạng 1. → Embedding dùng cho **bằng chứng và kiểm tra lời giải thích** ở bước LLM.
+**Embedding xếp lại trong pool (kết quả âm, 17/10):** thay vì tìm trên toàn catalog bằng vector trung bình, cộng $w \cdot \cos(\text{phim vừa thích}, j)$ (hoặc max có trọng số trên 3 phim thích gần nhất) vào điểm fusion của các ứng viên. Cùng mẫu 10k validation: mốc 6,96% / 16,04%; tốt nhất $w = 0{,}25$ (phim vừa thích) 6,99% / 15,94% — tăng 0,03%, nhỏ hơn sai số mẫu (~±0,2%), Recall@50 giảm; $w \ge 0{,}5$ giảm rõ. Không đưa vào fusion. Lý do: ItemKNN đã nắm tín hiệu "phim vừa xem"; `item_doc` của nhiều phim chỉ có tên người. Ví dụ user mẫu: embedding trung bình đặt Harry Potter 3 ở hạng 5.298, dùng riêng phim vừa xem → hạng 37, trong khi ItemKNN xếp hạng 1. → Embedding dùng cho **bằng chứng và kiểm tra lời giải thích** ở bước LLM.
 
-BM25: chỉ giữ 50 từ mạnh nhất (trọng số × idf) trong truy vấn thay vì toàn bộ ~380 từ: nhanh hơn 5 lần (25 → 4,9 ms/user), NDCG@10 0,0156 → 0,0165, Recall@50 0,080 → 0,076.
+BM25: chỉ giữ 50 từ mạnh nhất (trọng số × idf) trong truy vấn thay vì toàn bộ ~380 từ: nhanh hơn 5 lần (25 → 4,9 ms/user), NDCG@10 1,56% → 1,65%, Recall@50 8,0% → 7,6%.
 
 **Quy ước đánh giá trên test (quyết định 17/10):**
 
 - Các run nằm trong hệ thống cuối hoặc là baseline chính (Popularity, BPR, ItemKNN, BM25, Fusion) được đánh giá trên **toàn bộ** 657.203 query test.
-- Dense **không** nằm trong fusion cuối (trọng số 0 trên validation), nên chỉ được đánh giá trên **mẫu cố định 50.000 query test** (`--query-limit 50000`, `Random(42)` như mọi mẫu khác), kết quả ở `runs/dense-movies-tv-2023/test_evaluation_50k.json`. Lý do: đánh giá toàn bộ mất ~90 phút trên máy này (mỗi user chấm cả 198k phim), trong khi mẫu 50k mất ~7 phút và sai số NDCG@10 chỉ ~±0,001 — đủ để báo cáo một nhánh yếu. Trong bảng kết quả phải ghi rõ "mẫu 50k" cạnh dòng Dense; không so sánh trực tiếp nó với các dòng toàn bộ test ở mức chênh lệch nhỏ hơn ~0,002.
+- Dense **không** nằm trong fusion cuối (trọng số 0 trên validation), nên chỉ được đánh giá trên **mẫu cố định 50.000 query test** (`--query-limit 50000`, `Random(42)` như mọi mẫu khác), kết quả ở `runs/dense-movies-tv-2023/test_evaluation_50k.json`. Lý do: đánh giá toàn bộ mất ~90 phút trên máy này (mỗi user chấm cả 198k phim), trong khi mẫu 50k mất ~7 phút và sai số NDCG@10 chỉ ~±0,1% — đủ để báo cáo một nhánh yếu. Trong bảng kết quả phải ghi rõ "mẫu 50k" cạnh dòng Dense; không so sánh trực tiếp nó với các dòng toàn bộ test ở mức chênh lệch nhỏ hơn ~0,2%.
 - Thử nghiệm và tune luôn làm trên **validation** (mẫu 10k/20k); test chỉ chạy với cấu hình đã chốt.
 
 Test thấp hơn validation khoảng 13–16% với **mọi** phương pháp (target test là tương tác cuối cùng, khó hơn), nên không phải dấu hiệu tune quá khớp.
@@ -306,7 +318,7 @@ Phát hiện khác (validation):
 
 ## Việc tiếp theo
 
-1. Đánh giá trên test (đang chạy nền): fusion (itemknn 1, bm25 0,1, popularity 1,0, method score, depth 200) và BM25 trên **toàn bộ** 657.203 query; Dense trên **mẫu cố định 50.000 query test** (`--query-limit 50000`, seed 42) — xem ghi chú "Quy ước đánh giá trên test" bên dưới.
+1. Đánh giá trên test (đang chạy nền): fusion (ItemKNN 47,6%, BM25 4,8%, popularity 47,6%; method score, depth 200) và BM25 trên **toàn bộ** 657.203 query; Dense trên **mẫu cố định 50.000 query test** (`--query-limit 50000`, seed 42) — xem ghi chú "Quy ước đánh giá trên test" bên dưới.
 2. Chọn LLM provider; cài LLM rerank top 20 → top 10 và giải thích top 3 bằng JSON có trích dẫn (Q5, Q6 trong [docs/architecture.md](docs/architecture.md)).
 3. Validator: ID nguồn tồn tại và đúng phim, tên người/thể loại được nhắc có trong bằng chứng; fallback về thứ hạng fusion khi LLM lỗi.
 4. Chạy run F, G trên mẫu user cố định; chấm citation và claim support; viết báo cáo.
@@ -322,7 +334,7 @@ Vấn đề mở không chặn tiến độ: `preprocess.py` và các file mà [
 
 - Kiểm tra nhánh `f/quan`; chạy thử luồng profile → CF trên dữ liệu thật, không rò rỉ.
 - So sánh BPR với baseline đơn giản → BPR yếu; cài ItemKNN, tune trên validation, đánh giá full test.
-- Phát hiện và sửa lỗi số liệu: bảng ItemKNN đầu tiên bị lẫn prior popularity do lỗi phá hòa trong script thử; số đúng là 0,0491 NDCG@10.
+- Phát hiện và sửa lỗi số liệu: bảng ItemKNN đầu tiên bị lẫn prior popularity do lỗi phá hòa trong script thử; số đúng là 4,91% NDCG@10.
 - Sắp xếp lại tài liệu theo module, thêm `README.md`, `CLAUDE.md`, `docs/overview.md`, xóa tài liệu nháp/lỗi thời.
 - **Đơn giản hóa toàn bộ backend** (~3.700 → ~950 dòng); chạy lại trên dữ liệu thật, ItemKNN và Popularity khớp kết quả cũ; BPR train local.
-- 17/10: tăng tốc profile (~6 s → ~0,3 s); thêm `genres`, `item_doc`; cài BM25, Dense, Fusion, kho review (9,25 triệu review), gói bằng chứng; chạy pha validation. Thử embedding xếp lại trong pool: không cải thiện (+0,0003). Đánh giá Dense trên test chuyển sang mẫu 50k (đánh giá toàn bộ ~90 phút, không ảnh hưởng quyết định nào). Embedding bge-small quá chậm trên CPU này → đổi sang MiniLM-L6 (66 phút cho cả catalog). BM25 giới hạn 50 từ truy vấn (nhanh hơn 5 lần). Fusion RRF không vượt ItemKNN → thêm fusion theo điểm + prior popularity (+15% NDCG). Kết quả validation: ItemKNN 0,0586 ≫ BM25 0,0165 > Dense 0,0140 > Popularity 0,0111 NDCG@10.
+- 17/10: tăng tốc profile (~6 s → ~0,3 s); thêm `genres`, `item_doc`; cài BM25, Dense, Fusion, kho review (9,25 triệu review), gói bằng chứng; chạy pha validation. Thử embedding xếp lại trong pool: không cải thiện (+0,03%). Đánh giá Dense trên test chuyển sang mẫu 50k (đánh giá toàn bộ ~90 phút, không ảnh hưởng quyết định nào). Embedding bge-small quá chậm trên CPU này → đổi sang MiniLM-L6 (66 phút cho cả catalog). BM25 giới hạn 50 từ truy vấn (nhanh hơn 5 lần). Fusion RRF không vượt ItemKNN → thêm fusion theo điểm + prior popularity (+15% NDCG). Kết quả validation: ItemKNN 5,86% ≫ BM25 1,65% > Dense 1,40% > Popularity 1,11% NDCG@10.
