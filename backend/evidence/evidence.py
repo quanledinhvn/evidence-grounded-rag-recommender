@@ -18,15 +18,38 @@ import sqlite3
 
 from typing import Any
 
+from backend.data.editions import NOT_A_NAME
 from backend.data.reviews import item_reviews, user_review
 
 
 WORD = re.compile(r"[a-z][a-z']+")
 METADATA_FIELDS = ["title", "genres", "description"]
 
+# item_doc parts are joined by ". "; a period after an initial ("Michael E. Satrazemis") or "Jr" is not a break.
+PART_BREAK = re.compile(r"(?<!\b[A-Z])(?<!Jr)(?<!Sr)\. ")
+
+BOOK = re.compile(r"\b(book|books|novel|read|reading|author)\b", re.IGNORECASE)
+FILM = re.compile(
+    r"\b(movie|movies|film|films|watch|watched|watching|actor|actors|actress|acting|cast|scene|scenes"
+    r"|director|directed|dvd|blu-?ray|episode|episodes|season|series|show|screen|cinema|performance)\b",
+    re.IGNORECASE,
+)
+
 
 def words(text: str) -> set[str]:
     return set(WORD.findall(text.lower()))
+
+
+def about_the_film(text: str) -> bool:
+    """False for reviews that talk about a book and never about the film (some are filed under the film)."""
+    return not BOOK.search(text) or bool(FILM.search(text))
+
+
+def placeholder(part: str) -> bool:
+    """True for 'Directors: Various' and the like."""
+    names = part.split(": ", 1)[1].split(", ")
+
+    return all(name.strip().lower() in NOT_A_NAME or not re.search(r"[A-Za-z]", name) for name in names)
 
 
 def shorten(text: str, max_words: int) -> str:
@@ -82,10 +105,15 @@ def item_evidence(
 
         for field in METADATA_FIELDS:
             if row.get(field):
-                add(item_id, "metadata", f"{row.get('source_id')}:{field}", f"{field}: {row[field]}")
+                # A title borrowed from another edition (backend/data/editions.py) cites that edition.
+                source_id = row.get("title_source") if field == "title" else None
+                add(item_id, "metadata", source_id or f"{row.get('source_id')}:{field}", f"{field}: {row[field]}")
 
-        # item_doc already contains "Directors: ..." and "Cast: ..." parts.
-        people = [part for part in (row.get("item_doc") or "").split(". ") if part.startswith(("Directors:", "Cast:"))]
+        # item_doc already contains "Directors: ..." and "Cast: ..." parts; "Various" says nothing.
+        people = [
+            part for part in PART_BREAK.split(row.get("item_doc") or "")
+            if part.startswith(("Directors:", "Cast:")) and not placeholder(part)
+        ]
         if people:
             add(item_id, "metadata", f"{row.get('source_id')}:people", ". ".join(people))
 
@@ -94,6 +122,7 @@ def item_evidence(
 
         # Other people's reviews written before the query time; most related to the user's taste first.
         reviews = item_reviews(connection, item_id, before=profile["as_of"], exclude_user=profile["user_id"])
+        reviews = [review for review in reviews if about_the_film(review["text"])]
         reviews.sort(key=lambda review: (-len(words(review["text"]) & liked_words), -review["helpful_vote"]))
 
         for review in reviews[:reviews_per_item]:

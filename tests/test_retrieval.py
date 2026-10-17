@@ -127,6 +127,28 @@ def test_fusion_model_combines_members_and_reloads(tmp_path):
     assert all("members" in item for item in items)
 
 
+def test_fusion_keeps_one_edition_per_film_and_skips_editions_of_seen_films(tmp_path):
+    splits, catalog = write_dataset(tmp_path)
+    data = load_fit_data(splits, catalog, "validation")
+    ItemKNN.fit(data, neighbors=10).save(tmp_path / "itemknn")
+    BM25.fit(data, catalog, min_df=1, max_df=1.0).save(tmp_path / "bm25")
+
+    # i2 and i3 are one film; i5 is another edition of i4, which u1 has already seen.
+    editions = {"i1": "i1", "i2": "i2", "i3": "i2", "i4": "i4", "i5": "i4", "i6": "i6"}
+    pq.write_table(pa.table({"item_id": list(editions), "work_id": list(editions.values())}), tmp_path / "editions.parquet")
+
+    member_dirs = {"itemknn": str(tmp_path / "itemknn"), "bm25": str(tmp_path / "bm25")}
+    members = {name: load_model(Path(path)) for name, path in member_dirs.items()}
+    fusion = Fusion(members, {"itemknn": 1.0, "bm25": 1.0, "popularity": 0.1}, depth=10, editions=editions)
+    fusion.save(tmp_path / "fusion", member_dirs, tmp_path / "editions.parquet")
+
+    items = ids(load_model(tmp_path / "fusion").recommend("u1", limit=4))
+
+    assert "i5" not in items                                     # edition of a seen film
+    assert len({"i2", "i3"} & set(items)) == 1                   # one edition per film
+    assert items == ids(fusion.recommend_batch(["u1"], limit=4)[0])
+
+
 def test_fuse_scores_normalises_each_member_and_adds_popularity_prior():
     lists = {
         "itemknn": [{"item_id": "a", "score": 0.4, "source": "itemknn"}, {"item_id": "b", "score": 0.2, "source": "itemknn"}],

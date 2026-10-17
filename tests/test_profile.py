@@ -7,7 +7,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from backend.profile.cli import main as profile_main
-from backend.profile.profile import DAY_MS, build_profile, load_catalog, load_history, signal_weight
+from backend.profile.profile import DAY_MS, build_profile, load_catalog, load_history, signal_weight, text_fields
 
 
 AS_OF = 100 * DAY_MS
@@ -91,3 +91,9 @@ def test_cli_prints_profile(tmp_path, capsys):
 
     assert profile["seen_item_ids"] == ["i1", "i2", "i3"]
     assert load_catalog(tmp_path / "catalog.parquet", set()) == {}
+
+
+def test_text_fields_cite_a_borrowed_title_from_its_own_edition():
+    fields = text_fields({"title": "Cast Away [DVD]", "title_source": "meta:a1:title", "details": "Directors: Robert Zemeckis", "source_id": "meta:a2"})
+
+    assert [field["source_id"] for field in fields] == ["meta:a1:title", "meta:a2:details"]

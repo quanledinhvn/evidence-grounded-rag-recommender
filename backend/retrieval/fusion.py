@@ -14,6 +14,9 @@ method="score" (normalised score fusion, the default)
     and the popularity prior can lift popular items that sit deep in a member's list.
 
 On validation RRF never beat ItemKNN alone; see CLAUDE.md for the numbers.
+
+With `editions` (backend/data/editions.py) the final list keeps one edition per film and
+leaves out every edition of a film the user has already seen.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ import numpy as np
 
 from backend.cf.common import Popularity, item_indices, rank_items, seen_items
 from backend.cf.evaluate import evaluate
+from backend.data.editions import load_editions
 from backend.data.io import read_json, write_json
 
 
@@ -79,6 +83,7 @@ class Fusion:
         k: float = 60.0,
         depth: int = 50,
         method: str = "score",
+        editions: dict[str, str] | None = None,
     ) -> None:
         """`members` maps a name to a model; a "popularity" member is always added."""
         self.members = dict(members)
@@ -88,13 +93,25 @@ class Fusion:
         self.members.setdefault("popularity", self.popularity)
         self.config = {"model": self.name, "method": method, "weights": weights, "k": k, "depth": depth}
 
+        # film[i] = index of the film's first edition; every item is its own film without `editions`.
+        index = self.data.item_index
+        self.film = np.arange(len(self.data.item_ids))
+        for item_id, work_id in (editions or {}).items():
+            if item_id in index and work_id in index:
+                self.film[index[item_id]] = index[work_id]
+
+        self.editions: dict[int, list[int]] = {}
+        for item, film in enumerate(self.film):
+            if item != film:
+                self.editions.setdefault(int(film), [int(film)]).append(item)
+
         # Popularity prior in [0, 1]: 1 for the most popular item, close to 0 for the least popular.
         rank = np.empty(len(self.popularity.order))
         rank[self.popularity.order] = np.arange(len(rank))
         self.prior = 1.0 - rank / len(rank)
 
     def recommend(self, user_id: str, limit: int = 10, exclude: tuple[str, ...] = ()) -> list[dict[str, Any]]:
-        excluded = seen_items(self.data, user_id) | item_indices(self.data, exclude)
+        excluded = self.all_editions(seen_items(self.data, user_id) | item_indices(self.data, exclude))
         lists = {name: model.recommend_batch([user_id], self.config["depth"])[0] for name, model in self.members.items()}
 
         return self._rank(lists, excluded, limit)
@@ -103,14 +120,19 @@ class Fusion:
         lists = {name: model.recommend_batch(user_ids, self.config["depth"]) for name, model in self.members.items()}
 
         return [
-            self._rank({name: member_lists[row] for name, member_lists in lists.items()}, seen_items(self.data, user_id), limit)
+            self._rank(
+                {name: member_lists[row] for name, member_lists in lists.items()},
+                self.all_editions(seen_items(self.data, user_id)),
+                limit,
+            )
             for row, user_id in enumerate(user_ids)
         ]
 
-    def save(self, model_dir: Path, member_dirs: dict[str, str]) -> None:
+    def save(self, model_dir: Path, member_dirs: dict[str, str], editions_path: Path | None = None) -> None:
         """Fusion has nothing to train: it only remembers which member models and weights to use."""
         model_dir.mkdir(parents=True, exist_ok=True)
-        write_json(model_dir / "config.json", {**self.config, "member_dirs": member_dirs})
+        editions = str(editions_path) if editions_path else None
+        write_json(model_dir / "config.json", {**self.config, "member_dirs": member_dirs, "editions": editions})
 
     @classmethod
     def load(cls, model_dir: Path) -> Fusion:
@@ -118,8 +140,13 @@ class Fusion:
 
         config = read_json(model_dir / "config.json")
         members = {name: load_model(Path(path)) for name, path in config["member_dirs"].items()}
+        editions = load_editions(Path(config["editions"])) if config.get("editions") else None
 
-        return cls(members, config["weights"], config["k"], config["depth"], config.get("method", "rrf"))
+        return cls(members, config["weights"], config["k"], config["depth"], config.get("method", "rrf"), editions)
+
+    def all_editions(self, items: set[int]) -> set[int]:
+        """The given items plus every other edition of the same films."""
+        return {edition for item in items for edition in self.editions.get(int(self.film[item]), [item])}
 
     def _rank(self, lists: dict[str, list[dict[str, Any]]], excluded: set[int], limit: int) -> list[dict[str, Any]]:
         weights = self.config["weights"]
@@ -131,8 +158,23 @@ class Fusion:
             prior = {item_id: float(self.prior[self.data.item_index[item_id]]) for item_id in candidates}
             fused = fuse_scores(lists, weights, prior)
 
-        best = sorted((entry for entry in fused.values() if entry["score"] > 0), key=lambda e: (-e["score"], e["item_id"]))[:limit]
+        best, films = [], set()
+
+        for entry in sorted((entry for entry in fused.values() if entry["score"] > 0), key=lambda e: (-e["score"], e["item_id"])):
+            item = self.data.item_index[entry["item_id"]]
+
+            # Skip seen films and further editions of a film already in the list.
+            if item in excluded or self.film[item] in films:
+                continue
+
+            films.add(self.film[item])
+            best.append(entry)
+
+            if len(best) == limit:
+                break
+
         indices = [self.data.item_index[entry["item_id"]] for entry in best]
+        excluded = excluded | self.all_editions(set(indices))
         ranked = rank_items(self.popularity, indices, [entry["score"] for entry in best], excluded, limit, self.name)
 
         members = {entry["item_id"]: entry["members"] for entry in best}

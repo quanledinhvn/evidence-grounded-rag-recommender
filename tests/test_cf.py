@@ -177,6 +177,19 @@ def test_evaluate_reports_ranking_metrics(tmp_path):
     assert report["positive_target"]["ndcg_at_10"] == pytest.approx(1 / math.log2(3))
 
 
+def test_evaluate_also_counts_another_edition_of_the_target_film(tmp_path):
+    splits, catalog = write_dataset(tmp_path)
+    model = ItemKNN.fit(load_fit_data(splits, catalog, "validation"), neighbors=10)
+    queries = tmp_path / "queries.parquet"
+    pq.write_table(pa.Table.from_pylist([{"user_id": "u1", "target_item_id": "i5", "target_rating": 5.0}]), queries)
+
+    ranked = ids(model.recommend("u1", limit=50))                  # i4, i3, then popular items
+    report = evaluate(model, queries, editions={"i5": "i3", "i3": "i3"})
+
+    assert report["ndcg_at_10"] == pytest.approx(1 / math.log2(ranked.index("i5") + 2))
+    assert report["same_film"]["ndcg_at_10"] == pytest.approx(1 / math.log2(3))   # i3 at rank 2 is the same film
+
+
 def test_cli_train_recommend_evaluate(tmp_path, capsys):
     splits, catalog = write_dataset(tmp_path)
     model_dir = tmp_path / "model"

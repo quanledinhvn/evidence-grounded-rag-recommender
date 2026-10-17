@@ -2,7 +2,7 @@
 
 Hệ gợi ý phim và chương trình truyền hình có giải thích dựa trên bằng chứng: hệ thống trả 10 gợi ý cho một người dùng và giải thích ba gợi ý đầu, mỗi lý do trích dẫn về metadata phim, review của người khác hoặc lịch sử của chính người dùng. Dữ liệu: Amazon Reviews 2023 – Movies & TV. Đồ án học phần Hệ gợi ý, Thạc sĩ Khoa học máy tính, HUST.
 
-**Trạng thái:** đã có pipeline dữ liệu, hồ sơ người dùng và nhánh CF (ItemKNN, BPR). BM25, embedding, fusion, bằng chứng và LLM chưa làm. Chi tiết tiến độ ở mục *Tiến độ* trong [CLAUDE.md](CLAUDE.md).
+**Trạng thái:** đã có pipeline dữ liệu, hồ sơ người dùng, các nhánh truy xuất (ItemKNN, BPR, BM25, embedding), fusion có gom phiên bản của cùng một phim, kho review và gói bằng chứng [H#]/[E#]. Bước LLM xếp lại và giải thích chưa làm. Chi tiết tiến độ và kết quả ở mục *Tiến độ* trong [CLAUDE.md](CLAUDE.md).
 
 ## Đọc tài liệu theo thứ tự
 
@@ -21,9 +21,11 @@ Hướng dẫn chạy từng module nằm cạnh code: [backend/data/README.md](
 
 ```text
 backend/
-  data/        # nhập 3 CSV split, nối metadata vào catalog (CLI recsys-data)
+  data/        # nhập split, nối metadata, gom phiên bản, kho review (CLI recsys-data)
   profile/     # hồ sơ người dùng từ lịch sử trước as_of (CLI recsys-profile)
-  cf/          # ItemKNN (nhánh chính), BPR-MF, Popularity, đánh giá (CLI recsys-cf)
+  cf/          # ItemKNN (nhánh chính), BPR-MF, Popularity, đánh giá, CLI chung recsys-cf
+  retrieval/   # BM25, embedding (Dense), fusion
+  evidence/    # gói bằng chứng cho LLM (CLI recsys-evidence)
 tests/         # pytest, dữ liệu giả rất nhỏ, không cần dữ liệu thật
 docs/          # tài liệu (xem bảng trên)
 dataset/       # dữ liệu gốc, không đưa lên Git
@@ -72,7 +74,20 @@ uv run recsys-cf recommend --model-dir runs/itemknn-movies-tv-2023/test --user-i
 uv run recsys-profile --splits artifacts/movies-tv-2023/splits.parquet \
   --catalog artifacts/movies-tv-2023/catalog_enriched.parquet --user-id <USER_ID> \
   --as-of <AS_OF_MS> --phase test
+
+# 4. Hệ thống cuối: gom phiên bản, fusion (ItemKNN + BM25 + popularity), gói bằng chứng
+uv run recsys-data group-editions --catalog artifacts/movies-tv-2023/catalog_enriched.parquet \
+  --output artifacts/movies-tv-2023/editions.parquet
+uv run recsys-cf fuse --member itemknn=runs/itemknn-movies-tv-2023/test --member bm25=runs/bm25-movies-tv-2023/test \
+  --weight itemknn=1 --weight bm25=0.1 --weight popularity=1 --method score --depth 200 \
+  --editions artifacts/movies-tv-2023/editions.parquet --output-dir runs/fusion-editions-movies-tv-2023/test
+uv run recsys-evidence --model-dir runs/fusion-editions-movies-tv-2023/test \
+  --splits artifacts/movies-tv-2023/splits.parquet --catalog artifacts/movies-tv-2023/catalog_enriched.parquet \
+  --reviews artifacts/movies-tv-2023/reviews.sqlite --editions artifacts/movies-tv-2023/editions.parquet \
+  --user-id <USER_ID> --as-of <AS_OF_MS> --phase test --candidates 3
 ```
+
+Đầy đủ các bước (BM25, embedding, tune fusion, kho review) và ví dụ cụ thể: mục *Hướng dẫn chạy test* trong [CLAUDE.md](CLAUDE.md).
 
 Trên Windows, nếu `implicit` báo `DLL load failed ... filename too long`, hãy đặt virtualenv ở đường dẫn ngắn hoặc bật LongPaths.
 

@@ -5,11 +5,12 @@ For every query (user_id, target_item_id) the model returns 50 items. Metrics:
 - NDCG@10    : 1 / log2(rank + 1) if the target is in the top 10, else 0 (rank 1 -> 1.0)
 - Recall@50  : 1 if the target is in the top 50 (the candidate pool for later steps)
 All are averaged over queries. `positive_target` repeats them for targets rated >= 4.
+
+With `editions` (item_id -> work_id, see backend/data/editions.py) the report adds `same_film`:
+the same metrics when any edition of the target film counts as a hit (DVD vs Blu-ray of one film).
 """
 
 from __future__ import annotations
-
-import math
 
 from pathlib import Path
 from random import Random
@@ -27,6 +28,7 @@ def evaluate(
     query_limit: int | None = None,
     seed: int = 42,
     batch_size: int = 256,
+    editions: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """`model` is anything with recommend_batch(user_ids, limit) (ItemKNN, BPR, Popularity)."""
     columns = ["user_id", "target_item_id", "target_rating"]
@@ -38,7 +40,7 @@ def evaluate(
         queries = [queries[index] for index in picked]
 
     count = len(queries)
-    ndcg, hit10, hit50 = np.zeros(count), np.zeros(count), np.zeros(count)
+    ranks, film_ranks = np.zeros(count), np.zeros(count)        # 0 = target not in the top 50
     fallback = np.zeros(count, dtype=bool)
 
     recommended: set[str] = set()
@@ -54,21 +56,23 @@ def evaluate(
             recommended.update(item_ids)
 
             fallback[index] = all(item["source"] == "popularity" for item in items)
+            ranks[index] = target_rank(item_ids, query["target_item_id"])
 
-            if query["target_item_id"] in item_ids:
-                rank = item_ids.index(query["target_item_id"]) + 1
-                hit50[index] = 1.0
-                hit10[index] = float(rank <= 10)
-
-                ndcg[index] = 1.0 / math.log2(rank + 1) if rank <= 10 else 0.0
+            if editions:
+                films = [editions.get(item_id, item_id) for item_id in item_ids]
+                film_ranks[index] = target_rank(films, editions.get(query["target_item_id"], query["target_item_id"]))
 
     elapsed_ms = (perf_counter() - started) * 1000.0
     positive = np.array([(query["target_rating"] or 0.0) >= 4.0 for query in queries], dtype=bool)
     catalog_size = len(model.data.item_ids)
 
-    report = summarize(ndcg, hit10, hit50, fallback)
-    report["positive_target"] = summarize(ndcg[positive], hit10[positive], hit50[positive], fallback[positive])
+    report = summarize(ranks, fallback)
+    report["positive_target"] = summarize(ranks[positive], fallback[positive])
     report["item_coverage"] = len(recommended) / catalog_size
+
+    if editions:
+        report["same_film"] = summarize(film_ranks, fallback)
+        report["same_film"]["positive_target"] = summarize(film_ranks[positive], fallback[positive])
 
     report["mean_latency_ms"] = elapsed_ms / max(1, count)
     report["model"] = getattr(model, "config", {"model": "popularity"})
@@ -76,14 +80,22 @@ def evaluate(
     return report
 
 
-def summarize(ndcg: np.ndarray, hit10: np.ndarray, hit50: np.ndarray, fallback: np.ndarray) -> dict[str, Any]:
-    if not len(ndcg):
+def target_rank(item_ids: list[str], target: str) -> int:
+    """1-based rank of the target in the list, 0 when it is missing."""
+    return item_ids.index(target) + 1 if target in item_ids else 0
+
+
+def summarize(ranks: np.ndarray, fallback: np.ndarray) -> dict[str, Any]:
+    if not len(ranks):
         return {"queries": 0}
 
+    top10 = (ranks >= 1) & (ranks <= 10)
+    ndcg = np.where(top10, 1.0 / np.log2(np.maximum(ranks, 1) + 1), 0.0)
+
     return {
-        "queries": int(len(ndcg)),
+        "queries": int(len(ranks)),
         "ndcg_at_10": float(ndcg.mean()),
-        "hr_at_10": float(hit10.mean()),
-        "recall_at_50": float(hit50.mean()),
+        "hr_at_10": float(top10.mean()),
+        "recall_at_50": float((ranks >= 1).mean()),
         "fallback_rate": float(fallback.mean()),
     }

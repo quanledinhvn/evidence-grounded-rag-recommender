@@ -12,6 +12,7 @@ from backend.cf.bpr import BPR
 from backend.cf.common import Popularity, load_fit_data
 from backend.cf.evaluate import evaluate
 from backend.cf.itemknn import ItemKNN
+from backend.data.editions import load_editions
 from backend.data.io import read_json, write_json
 from backend.retrieval.bm25 import BM25
 from backend.retrieval.dense import Dense
@@ -60,6 +61,7 @@ def main(argv: list[str] | None = None) -> int:
     evaluation.add_argument("--popularity", action="store_true", help="evaluate the popularity baseline instead")
     evaluation.add_argument("--query-limit", type=int, help="random sample of this many queries")
     evaluation.add_argument("--output", type=Path, help="also write the report to this JSON file")
+    evaluation.add_argument("--editions", type=Path, help="editions.parquet: also report same-film metrics")
 
     recommend = commands.add_parser("recommend", help="top items for one user")
     recommend.add_argument("--model-dir", type=Path, required=True)
@@ -73,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
     fuse.add_argument("--method", choices=["score", "rrf"], default="score")
     fuse.add_argument("--depth", type=int, default=200, help="items asked from each member")
     fuse.add_argument("--output-dir", type=Path, required=True)
+    fuse.add_argument("--editions", type=Path, help="editions.parquet: one edition per film, skip seen films")
 
     tune = commands.add_parser("tune-fusion", help="grid-search fusion weights on validation queries")
     tune.add_argument("--member", action="append", required=True, help="name=model_dir, repeatable")
@@ -104,7 +107,8 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "evaluate":
         model = load_model(args.model_dir)
         model = Popularity(model.data) if args.popularity else model
-        result = evaluate(model, args.queries, query_limit=args.query_limit)
+        editions = load_editions(args.editions) if args.editions else None
+        result = evaluate(model, args.queries, query_limit=args.query_limit, editions=editions)
 
         if args.output:
             write_json(args.output, result)
@@ -119,9 +123,11 @@ def main(argv: list[str] | None = None) -> int:
         members = {name: load_model(Path(path)) for name, path in member_dirs.items()}
         weights = {name: float(value) for name, value in pairs(args.weight).items()}
 
-        fusion = Fusion(members, weights, depth=args.depth, method=args.method)
-        fusion.save(args.output_dir, member_dirs)
-        result = {**fusion.config, "member_dirs": member_dirs}
+        editions = load_editions(args.editions) if args.editions else None
+
+        fusion = Fusion(members, weights, depth=args.depth, method=args.method, editions=editions)
+        fusion.save(args.output_dir, member_dirs, args.editions)
+        result = {**fusion.config, "member_dirs": member_dirs, "editions": str(args.editions or "")}
 
     else:
         members = {name: load_model(Path(path)) for name, path in pairs(args.member).items()}

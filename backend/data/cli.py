@@ -1,4 +1,4 @@
-"""recsys-data: import the CSV splits and enrich the catalog with metadata."""
+"""recsys-data: import the CSV splits, enrich the catalog, group editions, import reviews."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import json
 
 from pathlib import Path
 
+from backend.data.editions import write_editions
 from backend.data.enrich import enrich_catalog
 from backend.data.importer import import_splits, reorganize
 from backend.data.reviews import import_reviews
@@ -27,6 +28,10 @@ def main(argv: list[str] | None = None) -> int:
     enrich.add_argument("--metadata", type=Path, required=True)
     enrich.add_argument("--output", type=Path, required=True)
 
+    editions = commands.add_parser("group-editions", help="Group DVD / Blu-ray / Prime Video editions of one film")
+    editions.add_argument("--catalog", type=Path, required=True, help="catalog_enriched.parquet")
+    editions.add_argument("--output", type=Path, required=True)
+
     tidy = commands.add_parser("reorganize", help="Sort artifacts made by older versions for fast lookups")
     tidy.add_argument("--artifacts-dir", type=Path, required=True)
 
@@ -41,6 +46,8 @@ def main(argv: list[str] | None = None) -> int:
         stats = import_splits(args.train, args.validation, args.test, args.output_dir)
     elif args.command == "reorganize":
         stats = reorganize(args.artifacts_dir)
+    elif args.command == "group-editions":
+        stats = write_editions(args.catalog, args.output)
     elif args.command == "import-reviews":
         stats = import_reviews(args.reviews, args.catalog, args.output)
     else:

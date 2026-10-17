@@ -115,6 +115,8 @@ def text_fields(item: dict[str, Any] | None) -> list[dict[str, str]]:
         text = (item.get(name) or "").strip()
 
         if text:
-            fields.append({"name": name, "text": text, "source_id": f"{item.get('source_id')}:{name}"})
+            # A title borrowed from another edition (backend/data/editions.py) cites that edition.
+            source_id = item.get("title_source") if name == "title" else None
+            fields.append({"name": name, "text": text, "source_id": source_id or f"{item.get('source_id')}:{name}"})
 
     return fields
