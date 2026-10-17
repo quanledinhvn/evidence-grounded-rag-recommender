@@ -48,7 +48,7 @@ Importer ánh xạ `parent_asin` thành `item_id`, tạo `review_id` tổng hợ
 | `catalog.parquet` | Hợp các `parent_asin` xuất hiện làm target |
 | `split_stats.json` | Hash nguồn, số dòng, số user và số item catalog |
 
-Schema interaction gồm `user_id`, `item_id`, `rating`, `timestamp`, `review_id`, các trường text rỗng, `source_line` và `split`. Timestamp vẫn dùng đơn vị mili-giây trong toàn bộ artifact Movies and TV.
+Schema interaction gồm `user_id`, `item_id`, `rating`, `timestamp`, `review_id` và `split` (file `splits.parquet` tạo bởi phiên bản importer cũ còn thêm các cột text rỗng và `source_line`; code hiện tại chỉ đọc các cột trên nên dùng được cả hai). Timestamp vẫn dùng đơn vị mili-giây trong toàn bộ artifact Movies and TV.
 
 ## 5. Giới hạn dữ liệu văn bản
 

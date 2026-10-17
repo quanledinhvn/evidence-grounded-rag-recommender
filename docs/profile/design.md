@@ -1,6 +1,6 @@
 # Kế hoạch thiết kế Profile Builder
 
-> **Trạng thái:** profile core P1 đã được cài đặt trong `backend/profile/` và kiểm thử tại `tests/test_profile_builder.py`. Tích hợp CF P2, BM25 P3, semantic search P4 và fusion P5 chưa được cài đặt. Profile Builder không phải model cần huấn luyện.
+> **Trạng thái:** profile core P1 đã được cài đặt (đã đơn giản hóa) trong `backend/profile/profile.py` và kiểm thử tại `tests/test_profile.py`. Các mục 3 và 8 mô tả thiết kế ban đầu chi tiết hơn code hiện tại (schema có version, policy, diagnostics); code chỉ giữ phần cần cho đồ án. Tích hợp CF P2, BM25 P3, semantic search P4 và fusion P5 chưa được cài đặt. Profile Builder không phải model cần huấn luyện.
 >
 > Tài liệu này chi tiết hóa và thay thế contract `Profile`/Q1 hiện có trong [architecture.md](../architecture.md). Trước khi triển khai, P0 phải đồng bộ lại tài liệu kiến trúc tổng thể để không còn dùng schema cũ có `positive_terms`.
 
@@ -310,38 +310,18 @@ Mỗi nhánh tự báo một trong `ready`, `not_applicable`, `failed`:
 
 Popularity luôn phải lọc bằng `profile.seen_item_ids`. Negative item đã nằm trong seen nên không thể được gợi ý lại.
 
-## 7. Interface module đề xuất
+## 7. Interface module
 
-```text
-backend/profile/
-├── builder.py             # schema + ProfileBuilder
-├── history_store.py       # protocol + SQLite/Parquet implementation
-├── catalog_store.py       # catalog snapshot protocol
-├── bm25_query.py          # UserProfile -> BM25Query
-├── semantic_query.py      # UserProfile -> SemanticQuery
-├── cf_adapter.py          # UserProfile -> CF call
-└── eligibility.py         # ready/not_applicable/failed
-```
-
-Interface tối thiểu:
+Code hiện tại được giữ đơn giản (đồ án, không phải sản phẩm): một module `backend/profile/profile.py` với ba hàm và profile là `dict`.
 
 ```python
-class HistoryStore(Protocol):
-    def get_before(
-        self,
-        user_id: str,
-        as_of: int,
-        allowed_splits: tuple[str, ...],
-    ) -> Sequence[Interaction]: ...
-
-
-class ProfileBuilder:
-    def build(
-        self,
-        request: ProfileRequest,
-        policy: ProfilePolicy,
-    ) -> UserProfile: ...
+load_history(splits_path, user_id, as_of, phase) -> list[dict]        # bước 1: split + as_of
+load_catalog(catalog_path, item_ids) -> dict[str, dict]               # metadata của item đã xem
+build_profile(user_id, as_of, history, catalog,
+              max_signals=20, half_life_days=90) -> dict               # bước 2–6
 ```
+
+Các adapter cho BM25, semantic search và CF ở mục 4 sẽ là các hàm nhận `dict` profile này, đặt trong module retrieval tương ứng khi được cài đặt.
 
 Profile không nên được ghi vào CF bundle như một artifact dài hạn. Đây là dữ liệu theo request. Nếu cần cache, khóa cache phải gồm ít nhất `(schema_version, artifact_version, policy_hash, user_id, as_of)`; phiên bản đầu nên chưa cache để ưu tiên tính đúng.
 
@@ -455,8 +435,8 @@ Các giá trị trên là điểm xuất phát, không phải kết quả nghiê
 
 ## 12. Quan hệ với code hiện tại
 
-Profile core hiện có schema, `ProfileBuilder`, `HistoryStore`/`CatalogStore` protocol, in-memory store để kiểm thử và adapter Parquet. Nó thực thi cutoff `timestamp < as_of`, policy split theo phase, deduplicate latest-event, sentiment, recency weight, text snapshot, history source và diagnostics. Runtime Movies and TV phải dùng `artifacts/movies-tv-2023/catalog_enriched.parquet`; catalog chỉ có ID vẫn được hỗ trợ cho CF và tạo coverage warning.
+`backend/profile/profile.py` thực thi cutoff `timestamp < as_of`, split theo phase, giữ tương tác mới nhất của mỗi item, phân loại sentiment, trọng số recency, gắn text kèm `source_id` và đánh số `H1, H2, …`; item thiếu metadata được liệt kê trong `items_without_metadata`. Runtime Movies and TV phải dùng `artifacts/movies-tv-2023/catalog_enriched.parquet`. Test: `tests/test_profile.py`.
 
-CF hiện vẫn dùng trực tiếp `seen_by_user` và `positive_by_user` trong `backend/cf/bundle.py`. Chúng là dữ liệu phục vụ BPR bundle; bước P2 sẽ thêm adapter để CF nhận `UserProfile` mà không thay đổi primitive scoring hiện tại.
+CF (`backend/cf`) hiện đọc lịch sử trực tiếp từ `FitData` của chính model; với leave-last-out, lịch sử này trùng với `seen_item_ids` của profile (đã kiểm tra trên dữ liệu thật). Bước P2 chỉ cần truyền `seen_item_ids` của profile vào tham số `exclude` của `recommend`.
 
 P1 và bước enrich metadata đã hoàn thành. Thứ tự tiếp theo là P2 để bảo toàn CF hiện có, sau đó P3 và P4 có thể phát triển độc lập trên catalog enriched. Không dùng metadata Digital Music hoặc text bịa để làm pipeline có vẻ hoàn chỉnh.

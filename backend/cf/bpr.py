@@ -1,161 +1,145 @@
+"""BPR-MF baseline (Bayesian Personalized Ranking with matrix factorisation).
+
+Each user and item gets a vector; score(u, j) = user_vector . item_vector + item_bias.
+Training (done by the `implicit` library) pushes items the user rated >= 4 above random
+other items. Users without any positive rating, and items nobody rated >= 4, have no
+useful vector: those users get popularity, those items are never recommended by BPR.
+"""
+
 from __future__ import annotations
 
-import math
-
-from dataclasses import dataclass
-from importlib.metadata import version
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from implicit.cpu.bpr import BayesianPersonalizedRanking
-from scipy.sparse import csr_matrix
+
+from backend.cf.common import POSITIVE_RATING, FitData, Popularity, item_indices, rank_items, seen_items, top_k
+from backend.data.io import read_json, write_json
 
 
-@dataclass(frozen=True)
-class BPRConfig:
-    factors: int = 64
-    learning_rate: float = 0.01
-    regularization: float = 0.001
+class BPR:
+    name = "bpr"
 
-    epochs: int = 100
-    seed: int = 42
-    num_threads: int = 0
-
-    verify_negative_samples: bool = True
-
-    def __post_init__(self) -> None:
-        if self.factors <= 0:
-            raise ValueError("factors must be positive")
-
-        if not math.isfinite(self.learning_rate) or self.learning_rate <= 0.0:
-            raise ValueError("learning_rate must be positive")
-
-        if not math.isfinite(self.regularization) or self.regularization < 0.0:
-            raise ValueError("regularization must be non-negative")
-
-        if self.epochs <= 0:
-            raise ValueError("epochs must be positive")
-
-        if self.num_threads < 0:
-            raise ValueError("num_threads must be non-negative")
-
-
-class BPRModel:
-    def __init__(self, config: BPRConfig) -> None:
-        self.config = config
-
-        self.user_factors = np.empty((0, config.factors), dtype=np.float32)
-        self.item_factors = np.empty((0, config.factors), dtype=np.float32)
-        self.item_bias = np.empty(0, dtype=np.float32)
-
-    def fit(
+    def __init__(
         self,
-        user_count: int,
-        item_count: int,
-        positive_pairs: list[tuple[int, int]],
-    ) -> list[dict[str, float | int]]:
-        _validate_fit_inputs(user_count, item_count, positive_pairs)
+        data: FitData,
+        user_factors: np.ndarray,
+        item_factors: np.ndarray,
+        item_bias: np.ndarray,
+        config: dict[str, Any],
+    ) -> None:
+        self.data = data
+        self.user_factors = user_factors
+        self.item_factors = item_factors
 
-        pairs = np.asarray(sorted(positive_pairs), dtype=np.int32)
-        if len(pairs):
-            rows = pairs[:, 0]
-            columns = pairs[:, 1]
-        else:
-            rows = np.empty(0, dtype=np.int32)
-            columns = np.empty(0, dtype=np.int32)
+        self.item_bias = item_bias
+        self.config = config
+        self.popularity = Popularity(data)
 
-        values = np.ones(len(pairs), dtype=np.float32)
-        user_items = csr_matrix(
-            (values, (rows, columns)),
-            shape=(user_count, item_count),
-            dtype=np.float32,
+        # Items with at least one positive interaction are the only ones BPR learned.
+        self.learned_items = self.popularity.counts > 0
+
+    @classmethod
+    def fit(
+        cls,
+        data: FitData,
+        factors: int = 64,
+        learning_rate: float = 0.01,
+        regularization: float = 0.001,
+        epochs: int = 60,
+        seed: int = 42,
+        num_threads: int = 0,
+    ) -> BPR:
+        model = BayesianPersonalizedRanking(
+            factors=factors,
+            learning_rate=learning_rate,
+            regularization=regularization,
+            iterations=epochs,
+            random_state=seed,
+            num_threads=num_threads,
+        )
+        model.fit(data.matrix(min_rating=POSITIVE_RATING), show_progress=False)
+
+        # implicit stores the item bias as the last item-factor column
+        # (the matching user column is a constant 1).
+        config = {
+            "model": cls.name,
+            "phase": data.phase,
+            "factors": factors,
+            "learning_rate": learning_rate,
+            "regularization": regularization,
+            "epochs": epochs,
+            "seed": seed,
+        }
+
+        return cls(
+            data,
+            np.asarray(model.user_factors[:, :-1], dtype=np.float32),
+            np.asarray(model.item_factors[:, :-1], dtype=np.float32),
+            np.asarray(model.item_factors[:, -1], dtype=np.float32),
+            config,
         )
 
-        backend = BayesianPersonalizedRanking(
-            factors=self.config.factors,
-            learning_rate=self.config.learning_rate,
-            regularization=self.config.regularization,
-            iterations=self.config.epochs,
-            num_threads=self.config.num_threads,
-            verify_negative_samples=self.config.verify_negative_samples,
-            random_state=self.config.seed,
+    def recommend(self, user_id: str, limit: int = 10, exclude: tuple[str, ...] = ()) -> list[dict[str, Any]]:
+        excluded = seen_items(self.data, user_id) | item_indices(self.data, exclude)
+
+        return self._rank(user_id, excluded, limit)
+
+    def recommend_batch(self, user_ids: list[str], limit: int = 50) -> list[list[dict[str, Any]]]:
+        # One matrix product for the whole batch is much faster than one per user.
+        users = [self.data.user_index.get(user_id, 0) for user_id in user_ids]
+        scores = self.user_factors[users] @ self.item_factors.T + self.item_bias
+
+        return [
+            self._rank(user_id, seen_items(self.data, user_id), limit, scores[row])
+            for row, user_id in enumerate(user_ids)
+        ]
+
+    def save(self, model_dir: Path) -> None:
+        model_dir.mkdir(parents=True, exist_ok=True)
+        write_json(model_dir / "config.json", self.config)
+        self.data.save(model_dir / "fit_data.npz")
+
+        np.savez_compressed(
+            model_dir / "factors.npz",
+            user_factors=self.user_factors,
+            item_factors=self.item_factors,
+            item_bias=self.item_bias,
         )
-        callback_rows: list[tuple[int, float, int, int]] = []
-        backend.fit(
-            user_items,
-            show_progress=False,
-            callback=lambda *row: callback_rows.append(row),
-        )
 
-        if backend.user_factors is None or backend.item_factors is None:
-            raise RuntimeError("implicit BPR did not produce factor matrices")
+    @classmethod
+    def load(cls, model_dir: Path) -> BPR:
+        data = FitData.load(model_dir / "fit_data.npz")
 
-        self.user_factors = np.asarray(
-            backend.user_factors[:, :-1],
-            dtype=np.float32,
-        ).copy()
-        self.item_factors = np.asarray(
-            backend.item_factors[:, :-1],
-            dtype=np.float32,
-        ).copy()
-        self.item_bias = np.asarray(
-            backend.item_factors[:, -1],
-            dtype=np.float32,
-        ).copy()
-
-        metrics: list[dict[str, float | int]] = []
-        for epoch, duration, correct, skipped in callback_rows:
-            attempted = len(pairs) - skipped
-            train_auc = correct / attempted if attempted else 0.0
-
-            metrics.append(
-                {
-                    "epoch": epoch + 1,
-                    "train_auc": train_auc,
-                    "correct": correct,
-                    "skipped": skipped,
-                    "duration_seconds": duration,
-                }
+        with np.load(model_dir / "factors.npz") as arrays:
+            user_factors, item_factors, item_bias = (
+                arrays["user_factors"], arrays["item_factors"], arrays["item_bias"]
             )
 
-        return metrics
+        return cls(data, user_factors, item_factors, item_bias, read_json(model_dir / "config.json"))
 
-    def score_user(self, user_index: int) -> np.ndarray:
-        if user_index < 0 or user_index >= len(self.user_factors):
-            raise IndexError(f"Unknown user index: {user_index}")
+    def _rank(
+        self,
+        user_id: str,
+        excluded: set[int],
+        limit: int,
+        scores: np.ndarray | None = None,
+    ) -> list[dict[str, Any]]:
+        _, ratings = self.data.history(user_id)
 
-        return self.item_factors @ self.user_factors[user_index] + self.item_bias
+        if not (ratings >= POSITIVE_RATING).any():
+            return rank_items(self.popularity, [], [], excluded, limit, self.name)
 
+        if scores is None:
+            user = self.data.user_index[user_id]
+            scores = self.item_factors @ self.user_factors[user] + self.item_bias
 
-def config_to_dict(config: BPRConfig) -> dict[str, Any]:
-    return {
-        "epochs": config.epochs,
-        "factors": config.factors,
-        "implementation": "implicit.cpu.bpr.BayesianPersonalizedRanking",
-        "implicit_version": version("implicit"),
-        "item_bias": True,
-        "learning_rate": config.learning_rate,
-        "negative_sampling": "uniform_non_positive",
-        "num_threads": config.num_threads,
-        "optimizer": "implicit_bpr_sgd",
-        "regularization": config.regularization,
-        "seed": config.seed,
-        "verify_negative_samples": config.verify_negative_samples,
-    }
+        scores = scores.copy()
+        scores[~self.learned_items] = -np.inf
 
+        scores[list(excluded)] = -np.inf
+        best, best_scores = top_k(np.arange(len(scores)), scores, limit)
 
-def _validate_fit_inputs(
-    user_count: int,
-    item_count: int,
-    positive_pairs: list[tuple[int, int]],
-) -> None:
-    if user_count < 0 or item_count < 0:
-        raise ValueError("User and item counts must be non-negative")
-
-    for user_index, item_index in positive_pairs:
-        if not 0 <= user_index < user_count:
-            raise ValueError(f"User index outside mapping: {user_index}")
-
-        if not 0 <= item_index < item_count:
-            raise ValueError(f"Item index outside mapping: {item_index}")
+        return rank_items(self.popularity, best, best_scores, excluded, limit, self.name)

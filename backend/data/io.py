@@ -1,3 +1,5 @@
+"""Small file helpers shared by the data, profile and CF modules."""
+
 from __future__ import annotations
 
 import hashlib
@@ -8,23 +10,16 @@ from pathlib import Path
 from typing import Any
 
 
-def iter_jsonl(path: Path) -> Iterator[tuple[int, dict[str, Any]]]:
+def iter_jsonl(path: Path) -> Iterator[dict[str, Any]]:
+    """Yield one JSON object per line."""
     with path.open("r", encoding="utf-8") as stream:
-        for line_number, raw_line in enumerate(stream, start=1):
-            try:
-                record = json.loads(raw_line)
-            except json.JSONDecodeError as exc:
-                message = f"Invalid JSON at {path}:{line_number}: {exc.msg}"
-                raise ValueError(message) from exc
-
-            if not isinstance(record, dict):
-                message = f"Expected a JSON object at {path}:{line_number}"
-                raise ValueError(message)
-
-            yield line_number, record
+        for line in stream:
+            if line.strip():
+                yield json.loads(line)
 
 
-def source_sha256(path: Path) -> str:
+def sha256_file(path: Path) -> str:
+    """SHA-256 of a file, used to record which input produced an artifact."""
     digest = hashlib.sha256()
 
     with path.open("rb") as stream:
@@ -34,37 +29,12 @@ def source_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def read_parquet(
-    path: Path,
-    *,
-    filters: list[tuple[str, str, Any]] | None = None,
-) -> list[dict[str, Any]]:
-    try:
-        import pyarrow.parquet as parquet
-    except ImportError as exc:
-        message = "Parquet support requires the project dependency 'pyarrow'."
-        raise RuntimeError(message) from exc
-
-    return parquet.read_table(path, filters=filters).to_pylist()
+def read_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
-def write_parquet(
-    path: Path,
-    rows: list[dict[str, Any]],
-    *,
-    columns: tuple[str, ...] = (),
-) -> None:
-    try:
-        import pyarrow as pa
-        import pyarrow.parquet as parquet
-    except ImportError as exc:
-        message = "Parquet support requires the project dependency 'pyarrow'."
-        raise RuntimeError(message) from exc
-
+def write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    if rows:
-        table = pa.Table.from_pylist(rows)
-    else:
-        table = pa.table({column: pa.array([]) for column in columns})
+    text = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
 
-    parquet.write_table(table, path, compression="zstd")
+    path.write_text(text + "\n", encoding="utf-8")

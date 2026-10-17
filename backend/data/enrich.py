@@ -1,322 +1,169 @@
+"""Attach Amazon metadata (title, description, cast, ...) to every catalog item.
+
+Input:  catalog.parquet (item ids) and meta_Movies_and_TV.jsonl (one JSON per product)
+Output: catalog_enriched.parquet (one row per catalog item) and <output>.stats.json
+
+Items are matched exactly on parent_asin == item_id. `metadata_text` joins the content
+fields into one document that BM25, embeddings and evidence retrieval can all use.
+"""
+
 from __future__ import annotations
 
-import hashlib
-import json
-import math
+import html
+import re
 
 from pathlib import Path
 from typing import Any
 
-from backend.data.io import (
-    iter_jsonl,
-    read_parquet,
-    source_sha256,
-    write_parquet,
-)
-from backend.data.normalize import clean_text
-from backend.data.validation import metadata_item_id
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+from backend.data.io import iter_jsonl, sha256_file, write_json
 
 
-_CATALOG_COLUMNS = (
-    "item_id",
-    "title",
-    "subtitle",
-    "description",
-    "feature",
-    "main_category",
-    "category",
-    "store",
-    "details",
-    "metadata_text",
-    "average_rating",
-    "rating_number",
-    "source_id",
-    "source_line",
-)
+# Fields that describe the content of an item, in the order they appear in metadata_text.
+TEXT_FIELDS = ["title", "subtitle", "description", "feature", "main_category", "category", "details"]
 
-_DETAIL_FIELDS = (
-    "Genre",
-    "Actors",
-    "Starring",
-    "Directors",
-    "Director",
-    "Producers",
-    "Writers",
-    "Studio",
-    "Release date",
-    "Initial release date",
-    "Run time",
-    "Runtime",
-    "MPAA rating",
-    "Content advisory",
-    "Language",
-    "Audio languages",
-    "Subtitles",
-    "Dubbed",
-    "Audio Description",
-    "Media Format",
-    "Format",
-    "Aspect Ratio",
-)
+# Keys of the metadata "details" dict that are worth keeping.
+DETAIL_KEYS = [
+    "Genre", "Actors", "Starring", "Directors", "Director", "Producers", "Writers", "Studio",
+    "Release date", "Initial release date", "Run time", "Runtime", "MPAA rating",
+    "Content advisory", "Language", "Audio languages", "Subtitles", "Dubbed",
+    "Audio Description", "Media Format", "Format", "Aspect Ratio",
+]
 
-_COVERAGE_FIELDS = (
-    "title",
-    "subtitle",
-    "description",
-    "feature",
-    "main_category",
-    "category",
-    "store",
-    "details",
-    "metadata_text",
-    "average_rating",
-    "rating_number",
-)
-
-
-def enrich_catalog(
-    catalog_path: Path,
-    metadata_path: Path,
-    output_path: Path,
-) -> dict[str, Any]:
-    if output_path.resolve() in (catalog_path.resolve(), metadata_path.resolve()):
-        raise ValueError("Enriched catalog output must not overwrite an input file")
-
-    catalog_rows = read_parquet(catalog_path)
-    catalog_ids = _catalog_ids(catalog_rows)
-
-    metadata_hash = source_sha256(metadata_path)
-    selected: dict[str, dict[str, Any]] = {}
-
-    rows_read = 0
-    matched_rows = 0
-    invalid_id_rows = 0
-    duplicate_rows = 0
-
-    for line_number, record in iter_jsonl(metadata_path):
-        rows_read += 1
-        item_id = _item_id(record)
-
-        if not item_id:
-            invalid_id_rows += 1
-            continue
-
-        if item_id not in catalog_ids:
-            continue
-
-        matched_rows += 1
-        candidate = _metadata_row(record, item_id, line_number, metadata_hash)
-        current = selected.get(item_id)
-
-        if current is not None:
-            duplicate_rows += 1
-
-        if current is None or candidate["text_field_count"] > current["text_field_count"]:
-            selected[item_id] = candidate
-
-    enriched_rows = [
-        _enriched_row(row, selected.get(str(row["item_id"])))
-        for row in catalog_rows
+CATALOG_SCHEMA = pa.schema(
+    [(field, pa.string()) for field in TEXT_FIELDS]
+    + [
+        ("item_id", pa.string()),
+        ("store", pa.string()),
+        ("metadata_text", pa.string()),
+        ("average_rating", pa.float64()),
+        ("rating_number", pa.int64()),
+        ("source_id", pa.string()),
     ]
-    write_parquet(output_path, enriched_rows, columns=_CATALOG_COLUMNS)
+)
 
-    items_with_text = sum(bool(row["metadata_text"]) for row in enriched_rows)
-    catalog_count = len(catalog_rows)
+_TAG = re.compile(r"<[^>]+>")
+_SPACES = re.compile(r"\s+")
+
+
+def enrich_catalog(catalog_path: Path, metadata_path: Path, output_path: Path) -> dict[str, Any]:
+    item_ids = pq.read_table(catalog_path, columns=["item_id"])["item_id"].to_pylist()
+    wanted = set(item_ids)
+    best: dict[str, dict[str, Any]] = {}
+
+    for record in iter_jsonl(metadata_path):
+        item_id = record.get("parent_asin") or record.get("asin")
+        if item_id not in wanted:
+            continue
+
+        row = metadata_row(item_id, record)
+
+        # If an item appears twice, keep the record with more text.
+        if item_id not in best or count_text(row) > count_text(best[item_id]):
+            best[item_id] = row
+
+    rows = [best.get(item_id) or empty_row(item_id) for item_id in item_ids]
+    table = pa.Table.from_pylist(rows, schema=CATALOG_SCHEMA)
+    pq.write_table(table, output_path)
 
     stats = {
-        "schema_version": "catalog-enrichment-v2",
-        "source_hashes": {
-            "catalog": source_sha256(catalog_path),
-            "metadata": metadata_hash,
-        },
-        "metadata_rows_read": rows_read,
-        "invalid_metadata_id_rows": invalid_id_rows,
-        "matched_metadata_rows": matched_rows,
-        "duplicate_metadata_rows": duplicate_rows,
-        "catalog_items": catalog_count,
-        "catalog_items_with_metadata_row": len(selected),
-        "catalog_items_with_text": items_with_text,
-        "catalog_items_without_text": catalog_count - items_with_text,
+        "catalog_items": len(rows),
+        "catalog_items_with_metadata": len(best),
         "field_coverage": {
-            field: sum(_has_value(row.get(field)) for row in enriched_rows)
-            for field in _COVERAGE_FIELDS
+            field: sum(1 for row in rows if row[field]) for field in TEXT_FIELDS + ["metadata_text"]
         },
-        "text_coverage": items_with_text / catalog_count if catalog_count else 0.0,
-        "outputs": {
-            "catalog": str(output_path),
-            "stats": str(output_path.with_suffix(".stats.json")),
-        },
+        "source_hashes": {"catalog": sha256_file(catalog_path), "metadata": sha256_file(metadata_path)},
     }
-    _write_json(output_path.with_suffix(".stats.json"), stats)
+    write_json(output_path.with_suffix(".stats.json"), stats)
 
     return stats
 
 
-def _catalog_ids(rows: list[dict[str, Any]]) -> frozenset[str]:
-    item_ids: set[str] = set()
-
-    for row in rows:
-        item_id = str(row.get("item_id") or "").strip()
-        if not item_id:
-            raise ValueError("Catalog contains an empty item_id")
-
-        if item_id in item_ids:
-            raise ValueError(f"Duplicate catalog item: {item_id}")
-
-        item_ids.add(item_id)
-
-    return frozenset(item_ids)
-
-
-def _item_id(record: dict[str, Any]) -> str:
-    raw_item_id = metadata_item_id(record)
-
-    return raw_item_id.strip() if isinstance(raw_item_id, str) else ""
-
-
-def _metadata_row(
-    record: dict[str, Any],
-    item_id: str,
-    line_number: int,
-    metadata_hash: str,
-) -> dict[str, Any]:
-    title = clean_text(record.get("title"))
-    subtitle = clean_text(record.get("subtitle"))
-    description = clean_text(record.get("description"))
-
-    feature = clean_text(record.get("feature", record.get("features")))
+def metadata_row(item_id: str, record: dict[str, Any]) -> dict[str, Any]:
     main_category = clean_text(record.get("main_category"))
-    category = _category_text(record, main_category)
-
-    store = clean_text(record.get("store"))
-    details = _details_text(record.get("details"))
-
-    text_parts = (
-        title,
-        subtitle,
-        description,
-        feature,
-        main_category,
-        category,
-        details,
-    )
-    metadata_text = " ".join(part for part in text_parts if part)
-
-    return {
+    row = {
         "item_id": item_id,
-        "title": title or None,
-        "subtitle": subtitle or None,
-        "description": description,
-        "feature": feature,
+        "title": clean_text(record.get("title")),
+        "subtitle": clean_text(record.get("subtitle")),
+        "description": clean_text(record.get("description")),
+        "feature": clean_text(record.get("features", record.get("feature"))),
         "main_category": main_category,
-        "category": category,
-        "store": store,
-        "details": details,
-        "metadata_text": metadata_text,
-        "average_rating": _optional_float(record.get("average_rating")),
-        "rating_number": _optional_int(record.get("rating_number")),
-        "source_id": _source_id(metadata_hash, line_number),
-        "source_line": line_number,
-        "text_field_count": sum(bool(part) for part in text_parts),
+        "category": category_text(record.get("categories", record.get("category")), main_category),
+        "details": details_text(record.get("details")),
+        "store": clean_text(record.get("store")),
+        "average_rating": to_float(record.get("average_rating")),
+        "rating_number": to_int(record.get("rating_number")),
+        # Stable id that explanations can cite, e.g. "meta:B00271DNP4:description".
+        "source_id": f"meta:{item_id}",
     }
+    row["metadata_text"] = " ".join(row[field] for field in TEXT_FIELDS if row[field])
+
+    return row
 
 
-def _category_text(record: dict[str, Any], main_category: str) -> str:
+def empty_row(item_id: str) -> dict[str, Any]:
+    row: dict[str, Any] = {field: "" for field in TEXT_FIELDS}
+    row.update(item_id=item_id, store="", metadata_text="", average_rating=None, rating_number=None, source_id=None)
+
+    return row
+
+
+def count_text(row: dict[str, Any]) -> int:
+    return sum(1 for field in TEXT_FIELDS if row[field])
+
+
+def clean_text(value: Any) -> str:
+    """Plain text: lists are joined, HTML entities/tags removed, whitespace collapsed."""
+    if isinstance(value, list):
+        return " ".join(part for part in (clean_text(item) for item in value) if part)
+
+    if not isinstance(value, str):
+        return ""
+
+    text = _TAG.sub(" ", html.unescape(value))
+
+    return _SPACES.sub(" ", text).strip()
+
+
+def category_text(categories: Any, main_category: str) -> str:
+    """Distinct categories, without repeating main_category."""
     values: list[str] = []
 
-    raw_categories = record.get("category", record.get("categories"))
-    if isinstance(raw_categories, list):
-        categories = [clean_text(value) for value in raw_categories]
-    else:
-        categories = [clean_text(raw_categories)]
-
-    for category in categories:
-        if category and category != main_category and category not in values:
-            values.append(category)
+    for category in categories if isinstance(categories, list) else [categories]:
+        text = clean_text(category)
+        if text and text != main_category and text not in values:
+            values.append(text)
 
     return " ".join(values)
 
 
-def _details_text(value: object) -> str:
-    if not isinstance(value, dict):
+def details_text(details: Any) -> str:
+    """'Directors: X Starring: Y ...' from the useful keys of the details dict."""
+    if not isinstance(details, dict):
         return ""
 
-    parts: list[str] = []
-    for field in _DETAIL_FIELDS:
-        detail = _detail_value(value.get(field))
+    parts = []
+    for key in DETAIL_KEYS:
+        value = details.get(key)
+        text = str(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else clean_text(value)
 
-        if detail:
-            parts.append(f"{field}: {detail}")
+        if text:
+            parts.append(f"{key}: {text}")
 
     return " ".join(parts)
 
 
-def _detail_value(value: object) -> str:
-    if isinstance(value, (str, list)):
-        return clean_text(value)
-
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return str(value)
-
-    return ""
-
-
-def _optional_float(value: object) -> float | None:
-    if isinstance(value, bool):
-        return None
-
+def to_float(value: Any) -> float | None:
     try:
-        result = float(value)  # type: ignore[arg-type]
+        return float(value)
     except (TypeError, ValueError):
         return None
 
-    return result if math.isfinite(result) else None
 
-
-def _optional_int(value: object) -> int | None:
-    if isinstance(value, bool):
-        return None
-
+def to_int(value: Any) -> int | None:
     try:
-        result = int(value)  # type: ignore[arg-type]
+        return int(value)
     except (TypeError, ValueError):
         return None
-
-    return result if result >= 0 else None
-
-
-def _has_value(value: object) -> bool:
-    if isinstance(value, str):
-        return bool(value)
-
-    return value is not None
-
-
-def _enriched_row(
-    catalog_row: dict[str, Any],
-    metadata_row: dict[str, Any] | None,
-) -> dict[str, Any]:
-    if metadata_row is None:
-        return {
-            column: catalog_row.get(column)
-            for column in _CATALOG_COLUMNS
-        }
-
-    return {
-        column: metadata_row.get(column)
-        for column in _CATALOG_COLUMNS
-    }
-
-
-def _source_id(metadata_hash: str, line_number: int) -> str:
-    payload = f"{metadata_hash}:{line_number}".encode("utf-8")
-
-    return hashlib.sha256(payload).hexdigest()
-
-
-def _write_json(path: Path, value: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    with path.open("w", encoding="utf-8") as stream:
-        json.dump(value, stream, ensure_ascii=False, indent=2, sort_keys=True)
-        stream.write("\n")

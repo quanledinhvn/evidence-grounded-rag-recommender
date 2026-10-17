@@ -2,8 +2,6 @@
 
 Tài liệu có hai phần. **Phần I** giải thích lý thuyết và ví dụ mà chưa yêu cầu người đọc biết cấu trúc code. **Phần II** mới ánh xạ từng khái niệm vào file, hàm và dòng code của dự án.
 
-> Số dòng khớp với code tại thời điểm viết. Khi code thay đổi, hãy tìm tên hàm được ghi kèm thay vì chỉ dựa vào số dòng.
->
 > Hướng dẫn này chỉ nói về BPR-MF và Popularity. ItemKNN, nhánh CF chính hiện nay, được mô tả trong [backend/cf/README.md](../../backend/cf/README.md#itemknn); kết quả so sánh nằm ở mục 6 của [overview.md](../overview.md).
 
 # Phần I Lý thuyết nền tảng
@@ -199,9 +197,7 @@ $$
 
 **Phát biểu bằng lời:** item coverage cho biết recommendation phủ bao nhiêu phần catalog.
 
-Query coverage của BPR là tỷ lệ query có đủ tín hiệu positive để BPR phục vụ. Fallback rate bằng một trừ query coverage.
-
-Latency gồm mean, p50 và p95. p95 quan trọng vì nó biểu diễn phần đuôi chậm, không chỉ tốc độ trung bình.
+Fallback rate là tỷ lệ query mà model không chấm được item nào (user không có tín hiệu) nên toàn bộ danh sách là popularity. Latency là thời gian trung bình mỗi query.
 
 ## 8. Validation và test
 
@@ -224,225 +220,99 @@ Nếu test metric được dùng để chọn số factors, learning rate hoặc
 
 | File | Vai trò |
 |---|---|
-| `backend/cf/cli.py` | Nhận lệnh, tạo grid, khóa cấu hình và chạy hai phase. |
-| `backend/cf/tuning.py` | Train từng candidate và chọn candidate tốt nhất. |
-| `backend/cf/bundle.py` | Chuẩn bị dữ liệu, lưu/nạp bundle và recommend. |
-| `backend/cf/bpr.py` | Adapter CSR cho BPR CPU của `implicit`. |
-| `backend/cf/baselines.py` | Cài đặt Popularity. |
-| `backend/cf/evaluation.py` | Chạy ranker và tính metric. |
+| `backend/cf/common.py` | `load_fit_data` đọc split được phép theo pha; `FitData` giữ lịch sử từng user theo thời gian; `Popularity`; `top_k`; `rank_items` ghép kết quả model với phần bổ sung popularity. |
+| `backend/cf/bpr.py` | Class `BPR` bọc `implicit.cpu.bpr.BayesianPersonalizedRanking`. |
+| `backend/cf/itemknn.py` | Class `ItemKNN`, nhánh CF chính (xem [backend/cf/README.md](../../backend/cf/README.md#itemknn)). |
+| `backend/cf/evaluate.py` | `evaluate(model, queries)` tính NDCG@10, HR@10, Recall@50. |
+| `backend/cf/cli.py` | Lệnh `recsys-cf train / evaluate / recommend`. |
 
 ```text
-cli._run_pipeline
-  -> tuning.select_bpr_config
-     -> bundle.train_bundle
-        -> BPRModel.fit
-           -> implicit.cpu.bpr.BayesianPersonalizedRanking.fit
-     -> evaluation.compare_retrievers
-  -> ghi locked_config.json
-  -> train_bundle phase=test
-  -> compare_retrievers trên test
+recsys-cf train --model bpr
+  -> load_fit_data(splits, catalog, phase)      # chỉ train (validation) hoặc train+validation (test)
+  -> BPR.fit(data, ...)                          # implicit học factor từ tương tác rating >= 4
+  -> model.save(output_dir)
+
+recsys-cf evaluate --model-dir ...
+  -> BPR.load(...)
+  -> evaluate(model, queries)                    # model.recommend_batch(user_ids, 50) theo từng lô
 ```
 
-Vị trí điều phối: `backend/cf/cli.py`, dòng 106–187.
+## 10. Dữ liệu fit: `load_fit_data` và `FitData`
 
-## 10. Chuẩn bị dữ liệu trong `bundle.py`
+- Pha `validation` chỉ đọc `train`; pha `test` đọc `train + validation` (hằng `FIT_SPLITS`). Đây là chỗ chặn rò rỉ test vào model.
+- User và item được đánh số theo thứ tự ID tăng dần; vì vậy "phá hòa theo index" cũng là phá hòa theo `item_id`.
+- Tương tác được sắp theo (user, thời gian, item). Lịch sử của user số `u` là đoạn `items[indptr[u]:indptr[u+1]]`, cũ trước mới sau.
+- Hai kiểm tra duy nhất: item phải thuộc catalog, và một cặp user–item không xuất hiện hai lần.
+- `FitData.matrix(min_rating)` dựng ma trận user × item nhị phân; BPR dùng `min_rating = 4` (chỉ positive), ItemKNN mặc định dùng mọi tương tác.
 
-### Catalog và split
+## 11. `BPR`
 
-- Dòng 218–239: từ chối `item_id` rỗng/trùng, sắp ID và kiểm tra catalog không rỗng.
-- Dòng 241–247: phase `validation` chỉ đọc `train`; phase `test` đọc `train + validation`.
-- Test chống leakage: `tests/test_cf_training.py`, dòng 95–153.
+- `BPR.fit` gọi `implicit`; thư viện thực hiện negative sampling và SGD bằng Cython/OpenMP.
+- `implicit` lưu bias của item ở cột cuối của item factor (cột tương ứng phía user luôn bằng 1). Code tách ra thành `user_factors`, `item_factors`, `item_bias`, nên $score(u, i) = p_u \cdot q_i + b_i$ đúng như Phần I.
+- `learned_items`: item có ít nhất một positive. Item còn lại không có tín hiệu học nên bị gán $-\infty$.
+- `num_threads=0` dùng mọi core; test dùng `num_threads=1`.
 
-### Kiểm tra interaction
+## 12. Gợi ý: `_rank`, `top_k`, `rank_items`
 
-Hàm `_validate_rows`, `backend/cf/bundle.py`, dòng 335–362:
+1. User không có rating ≥ 4 → danh sách popularity (cold start).
+2. Tính điểm mọi item; gán $-\infty$ cho item chưa học được và item đã xem.
+3. `top_k` lấy `limit` item điểm cao nhất; điểm bằng nhau xếp theo index. Hàm dùng `np.partition` để không phải sắp xếp toàn bộ 198k item.
+4. `rank_items` tạo `{"item_id", "score", "source"}` rồi bổ sung bằng popularity nếu thiếu.
 
-| Trường | Điều kiện | Dòng |
-|---|---|---:|
-| `user_id` | Không rỗng | 341–345 |
-| `item_id` | Không rỗng và thuộc catalog | 341–348 |
-| `rating` | Hữu hạn, từ 1 đến 5 | 350–352 |
-| `timestamp` | Số nguyên, không phải `bool` | 354–356 |
-| cặp user–item | Không trùng | 358–362 |
+`recommend_batch` nhân ma trận cho cả lô user một lần, nhanh hơn nhiều so với từng user.
 
-### Cấu trúc huấn luyện
+## 13. Popularity
 
-| Biến | Dòng | Liên hệ lý thuyết |
-|---|---:|---|
-| `user_to_index` | 249–250 | Hàng của $p_u$. |
-| `item_to_index` | 251 | Hàng của $q_i$. |
-| `seen_by_user` | 253, 269 | Mọi item đã thấy. |
-| `positive_by_user` | 254, 277 | Item rating từ 4. |
-| `positive_pairs` | 255, 279 | Các cặp $(u,i)$ cho BPR. |
-| `positive_users` | 256, 275 | User dùng được BPR. |
-| `learnable_items` | 258, 278 | Item được chấm bằng BPR. |
-| `popularity_counts` | 260, 274 | Số positive của item. |
+`Popularity` đếm số tương tác rating ≥ 4 của mỗi item trong dữ liệu fit, xếp giảm dần rồi theo index. `fill` lấy các item phổ biến nhất chưa xem và chưa được chọn. Đánh giá baseline này bằng `recsys-cf evaluate ... --popularity`.
 
-Dòng 261–264 sắp interaction để kết quả tái lập. Dòng 285–291 gọi `BPRModel.fit`.
+## 14. Metric: `evaluate`
 
-## 11. Đọc `bpr.py`
+- Đọc `user_id, target_item_id, target_rating` từ file query; `--query-limit` lấy mẫu ngẫu nhiên cố định (seed 42) để các model được so trên cùng user.
+- Với mỗi query: lấy 50 item, tìm hạng của target, ghi HR@10, NDCG@10 $= 1/\log_2(rank+1)$ và Recall@50.
+- `fallback_rate`: tỉ lệ query mà toàn bộ danh sách là popularity.
+- `positive_target`: cùng các metric nhưng chỉ với target rating ≥ 4.
 
-`BPRModel.fit` sắp positive pair, dựng CSR `user × item` kiểu `float32` và gọi
-`implicit.cpu.bpr.BayesianPersonalizedRanking`. Backend Cython/OpenMP thực hiện
-sampling và SGD; Python không còn lặp qua từng update.
+## 15. Chọn tham số
 
-Backend trả factor có thêm một chiều bias. Adapter tách chiều cuối của item
-factor thành ba artifact tương thích với inference hiện tại:
-
-```text
-user_factors: user_count × factors
-item_factors: item_count × factors
-item_bias:    item_count
-```
-
-Callback mỗi epoch được chuyển thành `train_auc`, `correct`, `skipped` và
-`duration_seconds`. `num_threads=0` dùng mọi core khả dụng; dùng
-`num_threads=1` khi kiểm thử tính tái lập.
-
-## 12. Recommendation và bundle
-
-### `CFBundle.recommend`
-
-Hàm nằm tại `backend/cf/bundle.py`, dòng 37–83:
-
-1. dòng 44–45 kiểm tra `limit` từ 0 đến 50;
-2. dòng 47–48 hợp nhất history với `seen_ids` truyền thêm;
-3. dòng 50–53 chuyển user không có positive sang Popularity;
-4. dòng 55–63 chấm điểm và lấy candidate chưa thấy;
-5. dòng 65–75 dùng `argpartition` lấy vùng top $N$;
-6. dòng 77 phá hòa bằng `item_id`;
-7. dòng 78–83 tạo response.
-
-`argpartition` tránh sort toàn catalog. Code giữ mọi item bằng ngưỡng, sort chính xác rồi cắt lại để tie ổn định.
-
-### Artifact
-
-| Artifact | Dòng ghi | Nội dung |
-|---|---:|---|
-| `bpr_model.npz` | 98–104 | User factor, item factor và bias. |
-| `user_mapping.json` | 106 | Mapping user. |
-| `item_mapping.json` | 107 | Mapping item. |
-| `bpr_config.json` | 108 | Cấu hình train. |
-| `fit_history.json` | 110–122 | Seen, positive và learnable item. |
-| `popularity.parquet` | 124–128 | Ranking Popularity. |
-| `manifest.json` | 130–151 | Hash, kích thước và phase. |
-
-`CFBundle.load`, dòng 153–204, kiểm tra checksum trước khi dựng model. `_verify_artifacts` nằm tại dòng 382–386.
-
-## 13. Baseline trong code
-
-### Popularity
-
-- `backend/cf/bundle.py`, dòng 260: khởi tạo count 0 cho toàn catalog.
-- Dòng 271–275: chỉ tăng count khi rating từ 4.
-- Dòng 296: sort theo count giảm dần rồi `item_id`.
-- `backend/cf/baselines.py`, dòng 11–26: loại seen và cắt theo limit.
-
-## 14. Metric trong code
-
-`_evaluate_ranker` nằm tại `backend/cf/evaluation.py`, dòng 112–166.
-
-| Việc | Dòng |
-|---|---:|
-| Gọi ranker và đo latency | 125–128 |
-| Thu thập item coverage | 130–134 |
-| Tìm target và rank | 135–140 |
-| Candidate Recall@50 | 141–142, 160 |
-| HR@10 | 144–145, 159 |
-| Discount NDCG@10 | 146, 158 |
-| p50 và p95 | 149–165 |
-
-Evaluator bắt buộc `limit == 50`. BPR cache candidate matrix/index, chấm theo
-batch và tích lũy `positive_target_slice` trong cùng lượt với full metrics.
-
-`compare_retrievers` chỉ chạy BPR trong vòng tuning. Popularity được thêm vào
-comparison cho full validation và full test. Latency BPR là latency trung bình
-khấu hao theo từng query trong một batch.
-
-## 15. Tuning và khóa cấu hình
-
-`select_bpr_config` train từng candidate, đánh giá trên mẫu validation cố định
-50.000 query rồi lưu NDCG@10, Candidate Recall@50, model size và latency.
-
-Thứ tự chọn tại dòng 49–57:
-
-1. NDCG@10 cao hơn;
-2. Candidate Recall@50 cao hơn;
-3. model nhỏ hơn;
-4. latency thấp hơn.
-
-Candidate thắng được đánh `selected = true`; bảng được ghi tại dòng 58–67.
-
-`backend/cf/cli.py`, dòng 111–128, dùng `itertools.product` tạo mọi tổ hợp factors, learning rate, regularization và epochs.
-
-Thứ tự khóa cấu hình:
-
-- dòng 130–147: tune rồi đánh giá validation;
-- dòng 149–166: ghi `locked_config.json`;
-- dòng 168–174: fit test bundle bằng config đã khóa;
-- dòng 175–185: đánh giá test và ghi `evaluation.json`.
+Thử vài cấu hình trên validation bằng `--query-limit 20000`, chọn theo NDCG@10 (hòa thì Recall@50 cao hơn), rồi train lại ở pha test và đánh giá test **một lần**. Bảng thử của ItemKNN nằm ở mục 6 của [overview.md](../overview.md). Cấu hình BPR hiện tại (64 factors, 60 epoch) lấy từ lần tune trước trên validation.
 
 ## 16. Chạy chương trình
 
 ```bash
-uv run recsys-cf pipeline \
-  --splits artifacts/movies-tv-2023/splits.parquet \
-  --catalog artifacts/movies-tv-2023/catalog.parquet \
-  --validation-queries artifacts/movies-tv-2023/queries_val.parquet \
-  --test-queries artifacts/movies-tv-2023/queries_test.parquet \
-  --output-dir artifacts/cf-v1
+uv run recsys-cf train --model bpr --splits artifacts/movies-tv-2023/splits.parquet \
+  --catalog artifacts/movies-tv-2023/catalog.parquet --phase test \
+  --output-dir runs/bpr-movies-tv-2023/test
+uv run recsys-cf evaluate --model-dir runs/bpr-movies-tv-2023/test \
+  --queries artifacts/movies-tv-2023/queries_test.parquet
+uv run recsys-cf recommend --model-dir runs/bpr-movies-tv-2023/test --user-id <USER_ID>
 ```
-
-Mặc định là 64 factors, learning rate 0.01, regularization 0.001, 100 epochs và seed 42. Các option nằm tại `backend/cf/cli.py`, dòng 63–92.
-
-| Lệnh | Khi dùng | Code |
-|---|---|---|
-| `train` | Tạo một validation hoặc test bundle. | `cli.py`, dòng 21–31 |
-| `evaluate` | Đánh giá bundle đã lưu. | `cli.py`, dòng 33–38 |
-| `pipeline` | Tune, lock, refit test và so baseline. | `cli.py`, dòng 40–43 và 106–187 |
 
 ## 17. Debug theo triệu chứng
 
-| Triệu chứng | Kiểm tra trước | Vị trí |
+| Triệu chứng | Kiểm tra trước | Ở đâu |
 |---|---|---|
-| Mọi user đều `cold_start` | `positive_users` có rỗng vì rating hoặc split không? | `bundle.py`, 241–279 |
-| Có item đã xem trong top N | `seen_by_user` và `seen_ids` có đúng không? | `bundle.py`, 47–58 |
-| Train AUC không tăng | Có positive pair và non-positive candidate không? | `bpr.py` |
-| Không tái lập | Có đang dùng `num_threads=1`, cùng seed, mapping và config không? | `bpr.py`; `bundle.py` |
-| Recall@50 thấp | Target có thuộc catalog và learnable pool không? | `bundle.py`, 58–63 |
-| Load lỗi checksum | Artifact nào bị sửa sau khi save? | `bundle.py`, 139–156, 382–386 |
+| Mọi item đều `source = popularity` | User có rating ≥ 4 trong split được phép không? | `BPR._rank` |
+| Có item đã xem trong kết quả | `seen_items` và `exclude` có đúng không? | `common.seen_items` |
+| Kết quả không tái lập | Cùng seed, `num_threads=1`, cùng dữ liệu fit? | `BPR.fit` |
+| Recall@50 thấp | Target có nằm trong catalog và có positive nào không? | `BPR.learned_items` |
 
 ## 18. Test quan trọng
 
+`tests/test_cf.py`:
+
 | Hành vi | Test |
 |---|---|
-| Backend, metrics và factor tái lập ở một thread | `tests/test_cf_training.py`, `BPRModelTests` |
-| Fit tái lập và cải thiện thứ tự | dòng 52–74 |
-| Validation chỉ đọc train | dòng 95–137 |
-| Test bundle không đọc test | dòng 138–153 |
-| Cold start dùng Popularity | dòng 155–174 |
-| Save/load giữ prediction và hash | dòng 210–236 |
-| Evaluator có đủ metric | dòng 238–283 |
-| Pipeline tạo lock và hai bundle | dòng 434–485 |
-| Tuning chọn candidate tốt hơn | dòng 511–556 |
+| Pha validation/test chỉ đọc split được phép | `test_fit_data_uses_only_allowed_splits_in_time_order` |
+| Popularity đếm positive, loại item đã xem | `test_popularity_counts_positive_ratings_and_skips_seen` |
+| BPR không gợi ý item đã xem hay item chưa học | `test_bpr_recommends_only_unseen_learned_items` |
+| Metric tính đúng trên ví dụ biết trước | `test_evaluate_reports_ranking_metrics` |
 
 ## Kết luận
 
 ```text
-Lý thuyết
-positive + sampled negative
-  -> BPR học thứ tự
-  -> loại seen
-  -> lấy top 50
-  -> đo ranking
-
-Code
-train_bundle
-  -> BPRModel.fit
-  -> CFBundle.recommend
-  -> compare_retrievers
-  -> select_bpr_config
-  -> refit test
+Lý thuyết                                Code
+positive + sampled negative          ->  BPR.fit (implicit)
+BPR học thứ tự                       ->  user_factors, item_factors, item_bias
+loại seen, lấy top 50                ->  BPR._rank -> top_k -> rank_items
+đo ranking                           ->  evaluate
 ```
-
-Đọc hết Phần I trước sẽ giúp Phần II trở thành việc đối chiếu khái niệm với code, thay vì phải học lý thuyết trong lúc lần theo từng hàm.

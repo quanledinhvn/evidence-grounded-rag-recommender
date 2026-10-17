@@ -328,7 +328,7 @@ backend/
     routes.py               # POST /recommend, GET /health
   schemas.py                # Pydantic request/response + kiểu dữ liệu nội bộ
   config.py                 # registry config_id, kiểm tra artifact và giới hạn
-  data/                     # audit, normalize, split, build_store
+  data/                     # importer (3 CSV split), enrich (metadata), build_store
   training/                 # fit_cf, popularity, build_bm25
   retrieval/                # profile, cf, bm25, fusion, evidence
   generation/               # adapter, prompts, rerank, explain, validators

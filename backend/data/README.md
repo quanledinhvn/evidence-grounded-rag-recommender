@@ -1,20 +1,13 @@
-# Pipeline dữ liệu Movies and TV 2023
+# backend/data — chuẩn bị dữ liệu
 
-Nguồn dữ liệu chính của dự án là ba split tuần tự đã có sẵn:
+| File | Việc |
+|---|---|
+| `importer.py` | Đọc 3 CSV split (train/valid/test), kiểm tra, ghi Parquet |
+| `enrich.py` | Nối metadata (title, mô tả, đạo diễn, diễn viên…) vào catalog theo `parent_asin` |
+| `io.py` | Hàm đọc/ghi JSON, JSONL, hash file |
+| `cli.py` | Lệnh `recsys-data` |
 
-- `dataset/2023/Movies_and_TV.train.csv`
-- `dataset/2023/Movies_and_TV.valid.csv`
-- `dataset/2023/Movies_and_TV.test.csv`
-
-Mỗi file có schema `user_id,parent_asin,rating,timestamp,history`. Pipeline không chia lại dữ liệu; nhãn `train`, `validation` và `test` được giữ nguyên từ file nguồn. `parent_asin` được chuẩn hóa thành `item_id`, còn timestamp Unix mili-giây được giữ nguyên để không làm mất thứ tự sự kiện.
-
-## Cài đặt
-
-```bash
-uv sync --extra dev
-```
-
-## Nhập ba split có sẵn
+## 1. Nhập split
 
 ```bash
 uv run recsys-data import-splits \
@@ -24,18 +17,18 @@ uv run recsys-data import-splits \
   --output-dir artifacts/movies-tv-2023
 ```
 
-Lệnh này đọc theo batch để phù hợp với file train lớn và tạo:
+Mỗi CSV có cột `user_id,parent_asin,rating,timestamp,history`. Split giữ nguyên như nguồn công bố, không chia lại. `parent_asin` đổi tên thành `item_id`; timestamp giữ đơn vị mili-giây.
 
-- `splits.parquet`: toàn bộ tương tác, giữ nguyên split nguồn;
-- `queries_val.parquet` và `queries_test.parquet`: target dành riêng cho evaluator;
-- `catalog.parquet`: catalog ID hợp nhất từ cả ba split;
-- `split_stats.json`: số dòng, số user, hash nguồn và đường dẫn artifact.
+Kiểm tra trước khi ghi: ID không rỗng, rating trong 1–5, timestamp dương, item đích không nằm trong chính `history` của dòng đó.
 
-Importer kiểm tra header, ID rỗng, rating ngoài khoảng 1–5, timestamp không dương và trường hợp target xuất hiện trong chính `history`. Vì nguồn CSV không chứa review text hoặc metadata phim, `catalog.parquet` ban đầu chỉ có ID và `catalog_items_with_bm25_text` bằng 0.
+Đầu ra:
 
-## Metadata và RAG
+- `splits.parquet`: mọi tương tác, cột `user_id, item_id, rating, timestamp, review_id, split`; `review_id = amazon-2023:<split>:<dòng CSV>`;
+- `queries_val.parquet`, `queries_test.parquet`: mỗi dòng là một câu hỏi đánh giá `user_id, as_of, target_item_id, target_rating, …` với `as_of` = thời điểm của item đích;
+- `catalog.parquet`: mọi `item_id` xuất hiện trong ba split;
+- `split_stats.json`: số dòng, số user, hash file nguồn.
 
-Metadata Movies and TV đã được giải nén tại `dataset/2023/meta_Movies_and_TV.jsonl`. Enrich catalog bằng phép nối chính xác `parent_asin` → `item_id`:
+## 2. Nối metadata
 
 ```bash
 uv run recsys-data enrich-catalog \
@@ -44,14 +37,10 @@ uv run recsys-data enrich-catalog \
   --output artifacts/movies-tv-2023/catalog_enriched.parquet
 ```
 
-Kết quả schema `catalog-enrichment-v2` hiện khớp đủ 197.943 item và được audit tại `catalog_enriched.stats.json`. Catalog giữ các field nội dung `title`, `subtitle`, `description`, `feature`, `main_category`, `category`, `details`; giữ `store`, `average_rating` và `rating_number` như thuộc tính phụ; đồng thời tạo `metadata_text` làm canonical document cho text index. `store` và hai thống kê rating không được ghép vào `metadata_text`.
-
-Dùng `catalog_enriched.parquet` cho Profile Builder, BM25, semantic search và metadata evidence. Review text Movies and TV vẫn chưa được import, vì vậy chưa có review evidence. Không dùng `meta_Digital_Music.jsonl` cho catalog phim.
-
-Các subcommand `audit`, `normalize`, `deduplicate`, `split` và `prepare` vẫn được giữ để hỗ trợ nguồn JSONL thô khác; chúng không phải đường xử lý mặc định của ba CSV hiện tại.
+Mỗi item có các trường nội dung `title, subtitle, description, feature, main_category, category, details` (HTML đã được làm sạch; `details` chỉ giữ các khóa hữu ích như `Directors`, `Starring`, `Genre`), cộng `store, average_rating, rating_number`. `metadata_text` ghép các trường nội dung thành một văn bản dùng chung cho BM25, embedding và bằng chứng. `source_id = meta:<item_id>` để giải thích trích dẫn được.
 
 ## Kiểm thử
 
 ```bash
-uv run pytest -q
+uv run pytest tests/test_data.py -q
 ```
