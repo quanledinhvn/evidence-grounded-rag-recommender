@@ -318,19 +318,33 @@ Phát hiện khác (validation):
 - BPR yếu vì bỏ qua thứ tự thời gian, chưa hội tụ (AUC còn tăng ở epoch 60) và dữ liệu thưa.
 - Embedding chạy CPU chậm: bge-small (~29 tài liệu/s) được thay bằng MiniLM-L6 với 64 token (~51 tài liệu/s); ghi là hạn chế trong báo cáo.
 
-## Việc tiếp theo
+## Việc tiếp theo (kế hoạch đề xuất 17/10)
 
-1. Kế hoạch chi tiết: xem đề xuất ngày 17/10 trong hội thoại; tóm tắt: phân tích theo nhóm user/phim cho báo cáo, rồi bước LLM khi đã chốt LLM.
-2. Chọn LLM provider; cài LLM rerank top 20 → top 10 và giải thích top 3 bằng JSON có trích dẫn (Q5, Q6 trong [docs/architecture.md](docs/architecture.md)).
-3. Validator: ID nguồn tồn tại và đúng phim, tên người/thể loại được nhắc có trong bằng chứng; fallback về thứ hạng fusion khi LLM lỗi.
-4. Chạy run F, G trên mẫu user cố định; chấm citation và claim support; viết báo cáo.
+**Giai đoạn 1 — Hoàn thiện phần truy xuất cho báo cáo** (không cần LLM; dùng mẫu 50k test và các model đã có, mỗi phân tích vài phút)
+
+1. Phân tích theo nhóm: độ dài lịch sử user (1–2, 3–5, 6–20, > 20 tương tác), độ phổ biến của target (phổ biến / trung bình / hiếm), target có hay không có title. So sánh ItemKNN, BM25, Fusion. Mục đích: trả lời "nhánh nội dung giúp ai" — kết quả trung bình cho thấy nó gần như không giúp, nhưng có thể giúp user mới hoặc phim hiếm.
+2. Đo Recall@20 của fusion (kích thước pool đưa vào LLM) để ước lượng có bao nhiêu user trong mẫu LLM có target trong pool.
+3. Chọn 3–5 ví dụ định tính (như user Harry Potter) cho báo cáo.
+
+**Giai đoạn 2 — LLM** (chờ chốt LLM, xem "Quyết định đang chờ")
+
+4. LLM rerank: top 20 của fusion + gói bằng chứng → top 10, đầu ra JSON `{"item_ids": [...]}`; ID lạ, trùng, sai schema hoặc timeout → giữ thứ hạng fusion (Q5 trong [docs/architecture.md](docs/architecture.md)).
+5. LLM giải thích top 3: mỗi câu kèm `[E#]`/`[H#]` (Q6).
+6. Validator: ID nguồn tồn tại và đúng phim, `H#` thuộc hồ sơ, tên người/thể loại được nhắc có trong bằng chứng, độ giống embedding giữa câu và bằng chứng; câu sai bị loại.
+7. Run F (LLM rerank) và G (giải thích bắt buộc trích dẫn so với không bắt buộc) trên mẫu user cố định (seed 42): 200 user cho giải thích; rerank đo thêm riêng trên nhóm user có target trong pool. Báo token, độ trễ, tỉ lệ fallback; chấm claim support bằng LLM và thủ công 30–50 mẫu.
+
+**Giai đoạn 3 — Demo và báo cáo**
+
+8. Một lệnh demo end-to-end cho một user: hồ sơ → fusion → bằng chứng → LLM → câu giải thích có trích dẫn.
+9. Viết báo cáo theo khung trong [docs/overview.md](docs/overview.md) mục 7, gồm các kết quả âm (RRF, embedding xếp lại) và đánh đổi độ phủ của prior popularity.
 
 Vấn đề mở không chặn tiến độ: `preprocess.py` và các file mà [docs/data/raw-dataset-survey.md](docs/data/raw-dataset-survey.md) nhắc tới không có trong repo; cần hỏi người viết khảo sát nếu dùng Dense-Works.
 
 ## Quyết định đang chờ
 
-- LLM provider, ngân sách token, hạn nộp (cần trước bước 2).
-- Có dùng tập Dense-Works (gộp phiên bản, 20-core; xem [docs/data/raw-dataset-survey.md](docs/data/raw-dataset-survey.md)) cho giai đoạn LLM không: với Recall@50 hiện tại, chỉ một phần nhỏ trong 200 user có target trong pool.
+- **LLM nào** cho bước 4–7: API (chất lượng tốt, tốn phí theo token) hay model chạy local (miễn phí nhưng máy này không có GPU, chạy model vài tỉ tham số trên CPU sẽ rất chậm). Ước lượng cho 200 user × 2 lời gọi: khoảng 1–1,5 triệu token đầu vào và 0,2 triệu token đầu ra.
+- **Ngân sách token** và **hạn nộp**.
+- **Dense-Works** cho giai đoạn LLM hay giữ 5-core: với Recall@50 = 14,2% của fusion, chỉ khoảng 1/7 user có target trong pool; đề xuất giữ 5-core và đo rerank riêng trên nhóm có target trong pool.
 
 ## Nhật ký phiên làm việc (13–17/10/2026)
 
