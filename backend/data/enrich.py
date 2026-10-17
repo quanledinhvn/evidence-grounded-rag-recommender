@@ -32,10 +32,20 @@ DETAIL_KEYS = [
     "Audio Description", "Media Format", "Format", "Aspect Ratio",
 ]
 
+# Category labels that describe format, studio or promotion rather than content.
+NOT_A_GENRE = re.compile(
+    r"^(Movies & TV|Movies|All|General|Genre for Featured Categories|Studio Specials|Boxed Sets"
+    r"|Independently Distributed|Disc on Demand|Fully Loaded DVDs|Today's Deals|By Country)$"
+    r"|^All\b|Titles$|Home Entertainment|Home Video|Pictures|Studios$|Blu-ray|DVD|\bBBC\b|Featured|Prime Video",
+    re.IGNORECASE,
+)
+
 CATALOG_SCHEMA = pa.schema(
     [(field, pa.string()) for field in TEXT_FIELDS]
     + [
         ("item_id", pa.string()),
+        ("genres", pa.string()),
+        ("item_doc", pa.string()),
         ("store", pa.string()),
         ("metadata_text", pa.string()),
         ("average_rating", pa.float64()),
@@ -73,7 +83,8 @@ def enrich_catalog(catalog_path: Path, metadata_path: Path, output_path: Path) -
         "catalog_items": len(rows),
         "catalog_items_with_metadata": len(best),
         "field_coverage": {
-            field: sum(1 for row in rows if row[field]) for field in TEXT_FIELDS + ["metadata_text"]
+            field: sum(1 for row in rows if row[field])
+            for field in TEXT_FIELDS + ["genres", "item_doc", "metadata_text"]
         },
         "source_hashes": {"catalog": sha256_file(catalog_path), "metadata": sha256_file(metadata_path)},
     }
@@ -100,15 +111,70 @@ def metadata_row(item_id: str, record: dict[str, Any]) -> dict[str, Any]:
         "source_id": f"meta:{item_id}",
     }
     row["metadata_text"] = " ".join(row[field] for field in TEXT_FIELDS if row[field])
+    row["genres"] = genres_text(record)
+    row["item_doc"] = item_document(row, record.get("details"))
 
     return row
 
 
 def empty_row(item_id: str) -> dict[str, Any]:
     row: dict[str, Any] = {field: "" for field in TEXT_FIELDS}
-    row.update(item_id=item_id, store="", metadata_text="", average_rating=None, rating_number=None, source_id=None)
+    row.update(item_id=item_id, genres="", item_doc="", store="", metadata_text="")
+    row.update(average_rating=None, rating_number=None, source_id=None)
 
     return row
+
+
+def genres_text(record: dict[str, Any]) -> str:
+    """Content labels only: categories plus the details 'Genre', without format/studio/promo labels."""
+    details = record.get("details") if isinstance(record.get("details"), dict) else {}
+    categories = record.get("categories") or []
+    genre = details.get("Genre") or ""
+
+    labels = list(categories) if isinstance(categories, list) else [categories]
+    labels += genre if isinstance(genre, list) else str(genre).split(",")
+    genres: list[str] = []
+
+    for label in labels:
+        text = clean_text(label)
+        if text and not NOT_A_GENRE.search(text) and text not in genres:
+            genres.append(text)
+
+    return ", ".join(genres)
+
+
+def item_document(row: dict[str, Any], details: Any) -> str:
+    """Short text that describes what the item is about, used by BM25 and embeddings.
+
+    Most informative fields first (embedding models only read the first ~256 tokens):
+    title, genres, directors, cast, then description. Format/studio/language noise is left out,
+    so items without a title (many Prime Video items) are still described by their people.
+    """
+    details = details if isinstance(details, dict) else {}
+    directors = people(details, "Directors", "Director")
+    cast = people(details, "Starring", "Actors")
+
+    parts = [
+        row["title"],
+        f"Genres: {row['genres']}" if row["genres"] else "",
+        f"Directors: {directors}" if directors else "",
+        f"Cast: {cast}" if cast else "",
+        row["description"],
+    ]
+
+    return ". ".join(part for part in parts if part)
+
+
+def people(details: dict[str, Any], *keys: str) -> str:
+    """Names from the first present key; lists and comma strings both become 'A, B, C'."""
+    for key in keys:
+        value = details.get(key)
+        if value:
+            names = value if isinstance(value, list) else str(value).split(",")
+
+            return ", ".join(name for name in (clean_text(n) for n in names) if name)
+
+    return ""
 
 
 def count_text(row: dict[str, Any]) -> int:

@@ -39,6 +39,11 @@ uv run recsys-data enrich-catalog \
 
 Mỗi item có các trường nội dung `title, subtitle, description, feature, main_category, category, details` (HTML đã được làm sạch; `details` chỉ giữ các khóa hữu ích như `Directors`, `Starring`, `Genre`), cộng `store, average_rating, rating_number`. `metadata_text` ghép các trường nội dung thành một văn bản dùng chung cho BM25, embedding và bằng chứng. `source_id = meta:<item_id>` để giải thích trích dẫn được.
 
+Hai cột dùng cho tìm kiếm theo nội dung:
+
+- `genres`: nhãn thể loại từ `categories` và `details.Genre`, đã bỏ nhãn định dạng, hãng phim và khuyến mãi (Blu-ray, "All … Titles", "… Home Video", "Today's Deals"…);
+- `item_doc`: văn bản gọn `Title. Genres: …. Directors: …. Cast: …. Description`, trường quan trọng đứng trước. Item không có title (phần lớn Prime Video) vẫn được mô tả bằng đạo diễn và diễn viên, ví dụ `B00271DNP4` → `Directors: Alfonso Cuarón. Cast: Daniel Radcliffe, Rupert Grint, Emma Watson`. Độ phủ 195.993/197.943 item.
+
 ## 3. Sắp xếp lại artifact cũ
 
 `import-splits` ghi `splits.parquet` đã sắp theo `user_id` rồi thời gian, chia thành nhóm 20.000 dòng; `enrich-catalog` ghi catalog theo `item_id`, nhóm 2.000 dòng. Parquet lưu min/max của từng nhóm, nên bộ lọc theo một user hoặc vài item chỉ đọc 1–2 nhóm thay vì cả file (hồ sơ một user: ~6 s → ~0,2 s). Với artifact tạo bằng phiên bản cũ:

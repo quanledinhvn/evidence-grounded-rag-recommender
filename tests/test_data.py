@@ -95,6 +95,8 @@ def test_enrich_joins_metadata_by_parent_asin(tmp_path):
     assert rows["i1"]["details"] == "Directors: Hanna"
     assert rows["i1"]["metadata_text"] == "Tom & Jerry Show Movies & TV Kids Directors: Hanna"
     assert rows["i1"]["source_id"] == "meta:i1"
+    assert rows["i1"]["genres"] == "Kids"                                   # "Movies & TV" is not a genre
+    assert rows["i1"]["item_doc"] == "Tom & Jerry Show. Genres: Kids. Directors: Hanna"
     assert rows["i2"]["metadata_text"] == ""
     assert stats["catalog_items_with_metadata"] == 1
 
