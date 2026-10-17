@@ -25,13 +25,40 @@ from backend.data.io import read_json, write_json
 from backend.retrieval.content import history_matrix, load_item_docs
 
 
+def inverse_document_frequency(counts: csr_matrix) -> np.ndarray:
+    """idf(t) = log(1 + (N - df + 0.5) / (df + 0.5)): high for rare words, ~0 for common ones."""
+    counts = counts.tocsr()
+    doc_freq = np.bincount(counts.indices, minlength=counts.shape[1])
+
+    return np.log(1.0 + (counts.shape[0] - doc_freq + 0.5) / (doc_freq + 0.5)).astype(np.float32)
+
+
+def keep_top_words(query: csr_matrix, idf: np.ndarray, max_words: int) -> csr_matrix:
+    """In every user's query keep only the `max_words` most telling words (weight x idf).
+
+    The liked items' documents contain hundreds of words; most are weak and each one
+    matches thousands of items. Keeping the strongest ones (names, rare genres) is
+    much faster and loses little.
+    """
+    query = query.tocsr()
+    rows, columns, values = [], [], []
+
+    for row in range(query.shape[0]):
+        low, high = query.indptr[row], query.indptr[row + 1]
+        words, weights = query.indices[low:high], query.data[low:high]
+        best = np.argsort(-(weights * idf[words]), kind="stable")[:max_words]
+
+        rows.append(np.full(len(best), row))
+        columns.append(words[best])
+        values.append(weights[best])
+
+    return csr_matrix((np.concatenate(values), (np.concatenate(rows), np.concatenate(columns))), shape=query.shape)
+
+
 def bm25_weights(counts: csr_matrix, k1: float, b: float) -> csr_matrix:
     """documents x words matrix of BM25 term weights, from raw word counts."""
     counts = counts.tocsr().astype(np.float32)
-    doc_count = counts.shape[0]
-    doc_freq = np.bincount(counts.indices, minlength=counts.shape[1])
-
-    idf = np.log(1.0 + (doc_count - doc_freq + 0.5) / (doc_freq + 0.5)).astype(np.float32)
+    idf = inverse_document_frequency(counts)
     lengths = np.asarray(counts.sum(axis=1)).ravel()
     length_norm = 1.0 - b + b * lengths / max(lengths.mean(), 1.0)
 
@@ -55,6 +82,8 @@ class BM25:
         self.popularity = Popularity(data)
         self.weights_by_word = weights.T.tocsr()
 
+        self.idf = inverse_document_frequency(words)
+
     @classmethod
     def fit(
         cls,
@@ -66,6 +95,7 @@ class BM25:
         max_df: float = 0.15,
         recency_decay: float = 0.7,
         max_history: int = 20,
+        max_query_words: int = 50,
     ) -> BM25:
         docs = load_item_docs(catalog_path, data)
         vectorizer = CountVectorizer(stop_words="english", min_df=min_df, max_df=max_df)
@@ -80,6 +110,7 @@ class BM25:
             "max_df": max_df,
             "recency_decay": recency_decay,
             "max_history": max_history,
+            "max_query_words": max_query_words,
             "vocabulary_size": counts.shape[1],
         }
 
@@ -114,7 +145,7 @@ class BM25:
     def _scores(self, user_ids: list[str]) -> csr_matrix:
         """users x items scores: (weighted words of liked items) @ BM25 weights."""
         history = history_matrix(self.data, user_ids, self.config["recency_decay"], self.config["max_history"])
-        query = history @ self.words
+        query = keep_top_words(history @ self.words, self.idf, self.config.get("max_query_words", 10**9))
 
         return (query @ self.weights_by_word).tocsr()
 

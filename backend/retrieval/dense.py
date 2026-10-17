@@ -20,11 +20,15 @@ from backend.data.io import read_json, write_json
 from backend.retrieval.content import history_matrix, load_item_docs
 
 
-DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
+# Small enough for CPU: ~50 documents/s on this machine (bge-small was ~2x slower).
+DEFAULT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 
-def embed_documents(docs: list[str], model_name: str = DEFAULT_MODEL, max_length: int = 128) -> np.ndarray:
-    """Unit-length vectors for the documents (empty documents get a zero vector)."""
+def embed_documents(docs: list[str], model_name: str = DEFAULT_MODEL, max_length: int = 64) -> np.ndarray:
+    """Unit-length vectors for the documents (empty documents get a zero vector).
+
+    Only the first `max_length` tokens are read; item_doc puts title, genres and people first.
+    """
     from sentence_transformers import SentenceTransformer
 
     model = SentenceTransformer(model_name, device="cpu")
