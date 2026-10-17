@@ -190,16 +190,23 @@ python -m backend.cf.cli evaluate --model-dir runs/itemknn-movies-tv-2023/test `
 
 ```powershell
 # Tìm trọng số trên VALIDATION (model pha validation)
-python -m backend.cf.cli tune-fusion --member itemknn=runs/validation/itemknn --member bm25=runs/validation/bm25 `
-  --member dense=runs/validation/dense --grid itemknn=1 --grid bm25=0,0.25,0.5,1 --grid dense=0,0.25,0.5,1 `
-  --grid popularity=0,0.25,0.5,1 --queries $a/queries_val.parquet --output runs/validation/fusion-grid.json
+python -m backend.cf.cli tune-fusion --method score --depth 200 --member itemknn=runs/validation/itemknn `
+  --member bm25=runs/validation/bm25 --member dense=runs/validation/dense --grid itemknn=1 --grid bm25=0,0.1,0.3 `
+  --grid dense=0,0.1,0.3 --grid popularity=0,0.25,0.5,1,2 --queries $a/queries_val.parquet --query-limit 10000 `
+  --output runs/validation/fusion-score-grid.json
 # Ghép model pha TEST với trọng số đã chọn
-python -m backend.cf.cli fuse --member itemknn=runs/itemknn-movies-tv-2023/test --member bm25=... --member dense=... `
-  --weight itemknn=1 --weight bm25=<w> --weight dense=<w> --weight popularity=<w> --output-dir runs/fusion-movies-tv-2023/test
+python -m backend.cf.cli fuse --member itemknn=runs/itemknn-movies-tv-2023/test --member bm25=runs/bm25-movies-tv-2023/test `
+  --weight itemknn=1 --weight bm25=0.1 --weight popularity=1 --method score --depth 200 --output-dir runs/fusion-movies-tv-2023/test
 ```
 
-- **Các bước và lý do:** mỗi nhánh trả top 50; phim ở hạng $r$ của nhánh $m$ được $w_m / (60 + r)$; cộng lại rồi xếp. Dùng **hạng** thay vì điểm vì mỗi nhánh chấm theo thang khác nhau (cosine, BM25, số lượt). Popularity là một nhánh riêng; phim mà một nhánh chỉ bổ sung bằng popularity không được tính cho nhánh đó. `tune-fusion` tính danh sách của từng nhánh một lần rồi thử mọi tổ hợp trọng số trên cùng 20k query validation.
-- **Output:** `fusion-grid.json` (mọi tổ hợp, tốt nhất trước); thư mục fusion chỉ chứa `config.json` (nhánh nào, trọng số bao nhiêu).
+- **Input:** các model đã train (cùng pha), trọng số từng nhánh.
+- **Các bước và lý do:**
+  1. Mỗi nhánh trả 200 ứng viên; chỉ tính những phim nhánh đó **tự tìm ra** (phim nó bổ sung bằng popularity không được tính).
+  2. `method score` (mặc định): điểm của nhánh chia cho điểm cao nhất của nhánh đó với user, nhân trọng số, cộng lại, rồi cộng $w_{pop} \cdot (1 - \text{hạng popularity}/N)$. Giữ được **độ tự tin** của từng nhánh và cho phép phim phổ biến nằm sâu trong danh sách được đẩy lên.
+  3. `method rrf`: chỉ dùng hạng, $w_m / (60 + r)$. Đã thử và không vượt ItemKNN, giữ lại để so sánh.
+  4. `tune-fusion` tính danh sách của từng nhánh một lần rồi thử mọi tổ hợp trọng số trên cùng một mẫu query validation.
+- **Output:** bảng mọi tổ hợp (tốt nhất trước); thư mục fusion chỉ chứa `config.json` (nhánh nào, trọng số, method, depth). Kết quả gợi ý có thêm `members`: nhánh nào đã tìm ra phim đó.
+- **Ví dụ:** trên 10k query validation, ItemKNN đứng riêng NDCG@10 0,0603 → fusion (itemknn 1, bm25 0,1, popularity 1,0) 0,0696.
 
 ### 8. Kho review — `recsys-data import-reviews`
 
