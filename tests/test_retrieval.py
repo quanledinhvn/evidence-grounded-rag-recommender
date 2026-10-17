@@ -13,7 +13,7 @@ from backend.cf.itemknn import ItemKNN
 from backend.retrieval.bm25 import BM25
 from backend.retrieval.content import liked_history
 from backend.retrieval.dense import Dense
-from backend.retrieval.fusion import Fusion, fuse
+from backend.retrieval.fusion import Fusion, fuse_ranks, fuse_scores
 
 
 DOCS = {
@@ -100,7 +100,8 @@ def test_fuse_sums_weighted_reciprocal_ranks():
         "popularity": [{"item_id": "p", "source": "popularity"}],
     }
 
-    fused = fuse(lists, {"itemknn": 1.0, "bm25": 1.0, "popularity": 0.5}, k=1.0)
+    fused = sorted(fuse_ranks(lists, {"itemknn": 1.0, "bm25": 1.0, "popularity": 0.5}, k=1.0).values(),
+                   key=lambda entry: -entry["score"])
 
     assert [entry["item_id"] for entry in fused] == ["b", "a", "p"]
     assert fused[0]["score"] == pytest.approx(1 / 3 + 1 / 2)    # rank 2 in itemknn, rank 1 in bm25
@@ -116,7 +117,7 @@ def test_fusion_model_combines_members_and_reloads(tmp_path):
 
     member_dirs = {"itemknn": str(tmp_path / "itemknn"), "bm25": str(tmp_path / "bm25")}
     members = {name: load_model(Path(path)) for name, path in member_dirs.items()}
-    fusion = Fusion(members, {"itemknn": 1.0, "bm25": 1.0, "popularity": 0.1})
+    fusion = Fusion(members, {"itemknn": 1.0, "bm25": 1.0, "popularity": 0.1}, depth=10)
     fusion.save(tmp_path / "fusion", member_dirs)
 
     items = load_model(tmp_path / "fusion").recommend("u1", limit=3)
@@ -124,3 +125,16 @@ def test_fusion_model_combines_members_and_reloads(tmp_path):
     assert items == fusion.recommend("u1", limit=3)
     assert {"i2", "i3"} <= set(ids(items))
     assert all("members" in item for item in items)
+
+
+def test_fuse_scores_normalises_each_member_and_adds_popularity_prior():
+    lists = {
+        "itemknn": [{"item_id": "a", "score": 0.4, "source": "itemknn"}, {"item_id": "b", "score": 0.2, "source": "itemknn"}],
+        "bm25": [{"item_id": "b", "score": 9.0, "source": "bm25"}],
+    }
+
+    fused = fuse_scores(lists, {"itemknn": 1.0, "bm25": 0.5, "popularity": 0.1}, {"a": 0.0, "b": 1.0})
+
+    assert fused["a"]["score"] == pytest.approx(1.0)                  # 0.4 / 0.4
+    assert fused["b"]["score"] == pytest.approx(0.5 + 0.5 + 0.1)      # 0.2/0.4 + 0.5 * 9/9 + 0.1 * prior
+    assert fused["b"]["members"] == ["itemknn", "bm25"]

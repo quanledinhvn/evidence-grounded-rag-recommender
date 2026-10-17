@@ -193,9 +193,12 @@ def rank_items(
     limit: int,
     source: str,
 ) -> list[dict[str, Any]]:
-    """Final list: the model's own top items first, then popular items to reach `limit`."""
-    if not 0 <= limit <= 50:
-        raise ValueError("limit must be between 0 and 50")
+    """Final list: the model's own top items first, then popular items to reach `limit`.
+
+    Evaluation always asks for 50; fusion asks its members for deeper lists (up to 500).
+    """
+    if not 0 <= limit <= 500:
+        raise ValueError("limit must be between 0 and 500")
 
     data = popularity.data
     ranked = [

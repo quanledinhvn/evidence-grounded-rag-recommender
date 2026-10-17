@@ -70,6 +70,8 @@ def main(argv: list[str] | None = None) -> int:
     fuse = commands.add_parser("fuse", help="save a fusion of trained models (nothing to train)")
     fuse.add_argument("--member", action="append", required=True, help="name=model_dir, repeatable")
     fuse.add_argument("--weight", action="append", required=True, help="name=weight, repeatable (incl. popularity)")
+    fuse.add_argument("--method", choices=["score", "rrf"], default="score")
+    fuse.add_argument("--depth", type=int, default=200, help="items asked from each member")
     fuse.add_argument("--output-dir", type=Path, required=True)
 
     tune = commands.add_parser("tune-fusion", help="grid-search fusion weights on validation queries")
@@ -77,6 +79,8 @@ def main(argv: list[str] | None = None) -> int:
     tune.add_argument("--grid", action="append", required=True, help="name=w1,w2,... (incl. popularity)")
     tune.add_argument("--queries", type=Path, required=True)
     tune.add_argument("--query-limit", type=int, default=20_000)
+    tune.add_argument("--method", choices=["score", "rrf"], default="score")
+    tune.add_argument("--depth", type=int, default=200, help="items asked from each member")
     tune.add_argument("--output", type=Path, help="also write the table to this JSON file")
 
     args = parser.parse_args(argv)
@@ -115,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
         members = {name: load_model(Path(path)) for name, path in member_dirs.items()}
         weights = {name: float(value) for name, value in pairs(args.weight).items()}
 
-        fusion = Fusion(members, weights)
+        fusion = Fusion(members, weights, depth=args.depth, method=args.method)
         fusion.save(args.output_dir, member_dirs)
         result = {**fusion.config, "member_dirs": member_dirs}
 
@@ -124,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
         members["popularity"] = Popularity(next(iter(members.values())).data)
         grid = {name: [float(v) for v in values.split(",")] for name, values in pairs(args.grid).items()}
 
-        result = tune_weights(members, args.queries, grid, query_limit=args.query_limit)
+        result = tune_weights(members, args.queries, grid, query_limit=args.query_limit, depth=args.depth, method=args.method)
 
         if args.output:
             write_json(args.output, result)

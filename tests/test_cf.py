@@ -123,7 +123,7 @@ def test_itemknn_exclude_unknown_user_and_batch(tmp_path):
     assert [ids(r) for r in model.recommend_batch(["u1", "unknown"], limit=2)] == [["i4", "i3"], ["i1", "i2"]]
 
     with pytest.raises(ValueError):
-        model.recommend("u1", limit=51)
+        model.recommend("u1", limit=501)
 
 
 def test_itemknn_save_and_load(tmp_path):
