@@ -9,6 +9,7 @@ from pathlib import Path
 
 from backend.data.enrich import enrich_catalog
 from backend.data.importer import import_splits, reorganize
+from backend.data.reviews import import_reviews
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -29,12 +30,19 @@ def main(argv: list[str] | None = None) -> int:
     tidy = commands.add_parser("reorganize", help="Sort artifacts made by older versions for fast lookups")
     tidy.add_argument("--artifacts-dir", type=Path, required=True)
 
+    reviews = commands.add_parser("import-reviews", help="Raw reviews of catalog items -> SQLite evidence store")
+    reviews.add_argument("--reviews", type=Path, required=True)
+    reviews.add_argument("--catalog", type=Path, required=True)
+    reviews.add_argument("--output", type=Path, required=True)
+
     args = parser.parse_args(argv)
 
     if args.command == "import-splits":
         stats = import_splits(args.train, args.validation, args.test, args.output_dir)
     elif args.command == "reorganize":
         stats = reorganize(args.artifacts_dir)
+    elif args.command == "import-reviews":
+        stats = import_reviews(args.reviews, args.catalog, args.output)
     else:
         stats = enrich_catalog(args.catalog, args.metadata, args.output)
 

@@ -5,13 +5,15 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hust-it4613-recsys"
 version = "0.1.0"
-description = "Offline data pipeline for the HUST recommender-systems project"
+description = "Evidence-grounded RAG recommender for the HUST recommender-systems course"
 requires-python = ">=3.11"
 dependencies = [
     "implicit>=0.7.2,<0.8",
     "numpy>=1.26,<3",
     "pyarrow>=17,<22",
+    "scikit-learn>=1.4,<2",
     "scipy>=1.11,<2",
+    "sentence-transformers>=3,<6",
 ]
 
 [project.optional-dependencies]
