@@ -39,6 +39,14 @@ uv run recsys-data enrich-catalog \
 
 Mỗi item có các trường nội dung `title, subtitle, description, feature, main_category, category, details` (HTML đã được làm sạch; `details` chỉ giữ các khóa hữu ích như `Directors`, `Starring`, `Genre`), cộng `store, average_rating, rating_number`. `metadata_text` ghép các trường nội dung thành một văn bản dùng chung cho BM25, embedding và bằng chứng. `source_id = meta:<item_id>` để giải thích trích dẫn được.
 
+## 3. Sắp xếp lại artifact cũ
+
+`import-splits` ghi `splits.parquet` đã sắp theo `user_id` rồi thời gian, chia thành nhóm 20.000 dòng; `enrich-catalog` ghi catalog theo `item_id`, nhóm 2.000 dòng. Parquet lưu min/max của từng nhóm, nên bộ lọc theo một user hoặc vài item chỉ đọc 1–2 nhóm thay vì cả file (hồ sơ một user: ~6 s → ~0,2 s). Với artifact tạo bằng phiên bản cũ:
+
+```bash
+uv run recsys-data reorganize --artifacts-dir artifacts/movies-tv-2023
+```
+
 ## Kiểm thử
 
 ```bash

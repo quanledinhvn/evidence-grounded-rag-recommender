@@ -65,8 +65,9 @@ def enrich_catalog(catalog_path: Path, metadata_path: Path, output_path: Path) -
             best[item_id] = row
 
     rows = [best.get(item_id) or empty_row(item_id) for item_id in item_ids]
+    # Rows follow the sorted catalog; small row groups make item_id lookups fast.
     table = pa.Table.from_pylist(rows, schema=CATALOG_SCHEMA)
-    pq.write_table(table, output_path)
+    pq.write_table(table, output_path, row_group_size=2_000)
 
     stats = {
         "catalog_items": len(rows),

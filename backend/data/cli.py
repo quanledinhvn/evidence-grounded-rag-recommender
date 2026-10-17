@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 from backend.data.enrich import enrich_catalog
-from backend.data.importer import import_splits
+from backend.data.importer import import_splits, reorganize
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -26,10 +26,15 @@ def main(argv: list[str] | None = None) -> int:
     enrich.add_argument("--metadata", type=Path, required=True)
     enrich.add_argument("--output", type=Path, required=True)
 
+    tidy = commands.add_parser("reorganize", help="Sort artifacts made by older versions for fast lookups")
+    tidy.add_argument("--artifacts-dir", type=Path, required=True)
+
     args = parser.parse_args(argv)
 
     if args.command == "import-splits":
         stats = import_splits(args.train, args.validation, args.test, args.output_dir)
+    elif args.command == "reorganize":
+        stats = reorganize(args.artifacts_dir)
     else:
         stats = enrich_catalog(args.catalog, args.metadata, args.output)
 

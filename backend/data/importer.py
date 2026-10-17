@@ -28,6 +28,9 @@ from backend.data.io import sha256_file, write_json
 
 SOURCE_COLUMNS = ["user_id", "parent_asin", "rating", "timestamp", "history"]
 
+ROW_GROUP_SIZE = 20_000
+CATALOG_ROW_GROUP_SIZE = 2_000
+
 COLUMN_TYPES = {
     "user_id": pa.string(),
     "parent_asin": pa.string(),
@@ -48,7 +51,7 @@ def import_splits(
     tables = {split: read_split(path, split) for split, path in sources.items()}
 
     interactions = pa.concat_tables(list(tables.values()))
-    pq.write_table(interactions, output_dir / "splits.parquet")
+    write_sorted_splits(interactions, output_dir / "splits.parquet")
 
     pq.write_table(make_queries(tables["validation"]), output_dir / "queries_val.parquet")
     pq.write_table(make_queries(tables["test"]), output_dir / "queries_test.parquet")
@@ -121,6 +124,49 @@ def check_rows(source: pa.Table, path: Path) -> None:
     for line, (item, history) in enumerate(zip(items, histories), start=2):
         if history and item in history.split():
             raise ValueError(f"{path}:{line}: target item appears in its own history")
+
+
+def write_sorted_splits(interactions: pa.Table, path: Path) -> None:
+    """Write interactions sorted by user and time, in small row groups.
+
+    Parquet keeps the min/max user_id of every row group, so reading one user's history
+    with a user_id filter only touches the one or two row groups that can contain it.
+    """
+    ordered = interactions.sort_by([("user_id", "ascending"), ("timestamp", "ascending")])
+
+    pq.write_table(ordered, path, row_group_size=ROW_GROUP_SIZE)
+
+
+def sort_splits(path: Path) -> dict[str, Any]:
+    """Re-write an existing splits.parquet in the sorted layout (keeps only the used columns)."""
+    columns = ["user_id", "item_id", "rating", "timestamp", "review_id", "split"]
+    interactions = pq.read_table(path, columns=columns)
+    temporary = path.with_suffix(".sorting.parquet")
+
+    write_sorted_splits(interactions, temporary)
+    temporary.replace(path)
+
+    return {"rows": interactions.num_rows, "row_groups": pq.ParquetFile(path).metadata.num_row_groups}
+
+
+def reorganize(artifacts_dir: Path) -> dict[str, Any]:
+    """Speed up per-user and per-item lookups in artifacts made by older versions.
+
+    splits.parquet is sorted by user; catalog_enriched.parquet (already sorted by item)
+    is split into small row groups so an item_id filter reads only a few of them.
+    """
+    stats = {"splits": sort_splits(artifacts_dir / "splits.parquet")}
+    catalog = artifacts_dir / "catalog_enriched.parquet"
+
+    if catalog.exists():
+        table = pq.read_table(catalog)
+        temporary = catalog.with_suffix(".sorting.parquet")
+
+        pq.write_table(table.sort_by("item_id"), temporary, row_group_size=CATALOG_ROW_GROUP_SIZE)
+        temporary.replace(catalog)
+        stats["catalog_row_groups"] = pq.ParquetFile(catalog).metadata.num_row_groups
+
+    return stats
 
 
 def make_queries(split_table: pa.Table) -> pa.Table:

@@ -8,7 +8,7 @@ import pytest
 
 from backend.data.cli import main as data_main
 from backend.data.enrich import clean_text, enrich_catalog
-from backend.data.importer import import_splits
+from backend.data.importer import import_splits, sort_splits
 
 
 HEADER = "user_id,parent_asin,rating,timestamp,history\n"
@@ -97,6 +97,22 @@ def test_enrich_joins_metadata_by_parent_asin(tmp_path):
     assert rows["i1"]["source_id"] == "meta:i1"
     assert rows["i2"]["metadata_text"] == ""
     assert stats["catalog_items_with_metadata"] == 1
+
+
+def test_sort_splits_orders_by_user_then_time(tmp_path):
+    rows = [
+        {"user_id": "u2", "item_id": "i1", "rating": 5.0, "timestamp": 5, "review_id": "a", "split": "train", "text": ""},
+        {"user_id": "u1", "item_id": "i2", "rating": 4.0, "timestamp": 9, "review_id": "b", "split": "test", "text": ""},
+        {"user_id": "u1", "item_id": "i3", "rating": 3.0, "timestamp": 1, "review_id": "c", "split": "train", "text": ""},
+    ]
+    path = tmp_path / "splits.parquet"
+    pq.write_table(pa.Table.from_pylist(rows), path)
+
+    sort_splits(path)
+    table = pq.read_table(path)
+
+    assert table["review_id"].to_pylist() == ["c", "b", "a"]
+    assert "text" not in table.column_names            # unused columns are dropped
 
 
 def test_clean_text_handles_lists_and_html():
