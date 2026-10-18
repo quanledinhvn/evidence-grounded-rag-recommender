@@ -31,14 +31,7 @@ def evaluate(
     editions: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """`model` is anything with recommend_batch(user_ids, limit) (ItemKNN, BPR, Popularity)."""
-    columns = ["user_id", "target_item_id", "target_rating"]
-    queries = pq.read_table(queries_path, columns=columns).to_pylist()
-
-    if query_limit is not None and query_limit < len(queries):
-        # Fixed random sample so different models are compared on the same users.
-        picked = sorted(Random(seed).sample(range(len(queries)), query_limit))
-        queries = [queries[index] for index in picked]
-
+    queries = load_queries(queries_path, query_limit, seed)
     count = len(queries)
     ranks, film_ranks = np.zeros(count), np.zeros(count)        # 0 = target not in the top 50
     fallback = np.zeros(count, dtype=bool)
@@ -80,9 +73,42 @@ def evaluate(
     return report
 
 
+def load_queries(queries_path: Path, query_limit: int | None = None, seed: int = 42) -> list[dict[str, Any]]:
+    """All queries, or a fixed random sample so different models are compared on the same users."""
+    present = pq.read_schema(queries_path).names
+    columns = [name for name in ["user_id", "as_of", "target_item_id", "target_rating"] if name in present]
+    queries = pq.read_table(queries_path, columns=columns).to_pylist()
+
+    if query_limit is not None and query_limit < len(queries):
+        picked = sorted(Random(seed).sample(range(len(queries)), query_limit))
+        queries = [queries[index] for index in picked]
+
+    return queries
+
+
 def target_rank(item_ids: list[str], target: str) -> int:
     """1-based rank of the target in the list, 0 when it is missing."""
     return item_ids.index(target) + 1 if target in item_ids else 0
+
+
+def film_rank(item_ids: list[str], target: str, editions: dict[str, str]) -> int:
+    """Rank of the first edition of the target film (any DVD / Blu-ray / Prime Video id counts)."""
+    return target_rank([editions.get(item_id, item_id) for item_id in item_ids], editions.get(target, target))
+
+
+def ranking_metrics(ranks: np.ndarray) -> dict[str, float]:
+    """NDCG@10, HR@10, Recall@20, Recall@50 from 1-based ranks (0 = missing)."""
+    if not len(ranks):
+        return {"ndcg_at_10": 0.0, "hr_at_10": 0.0, "recall_at_20": 0.0, "recall_at_50": 0.0}
+
+    top10 = (ranks >= 1) & (ranks <= 10)
+
+    return {
+        "ndcg_at_10": float(np.where(top10, 1.0 / np.log2(np.maximum(ranks, 1) + 1), 0.0).mean()),
+        "hr_at_10": float(top10.mean()),
+        "recall_at_20": float(((ranks >= 1) & (ranks <= 20)).mean()),
+        "recall_at_50": float((ranks >= 1).mean()),
+    }
 
 
 def summarize(ranks: np.ndarray, fallback: np.ndarray) -> dict[str, Any]:

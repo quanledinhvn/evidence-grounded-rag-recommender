@@ -8,6 +8,9 @@ __pycache__/
 dataset/
 .DS_Store
 
+# Secrets (GEMINI_API_KEY)
+.env
+
 # Generated data/model artifacts
 artifacts/
 runs/

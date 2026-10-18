@@ -208,3 +208,24 @@ def test_cli_train_recommend_evaluate(tmp_path, capsys):
     report = json.loads(capsys.readouterr().out)
     assert report["fallback_rate"] == 1.0
     assert json.loads((tmp_path / "report.json").read_text(encoding="utf-8")) == report
+
+
+def test_segments_split_queries_by_history_popularity_and_title(tmp_path):
+    from backend.cf.segments import history_segment, popularity_segment, segment_report
+
+    assert [history_segment(n) for n in (1, 2, 3, 6, 21)] == ["1-2", "1-2", "3-5", "6-20", ">20"]
+    assert [popularity_segment(r, 1000) for r in (0, 9, 10, 99, 100)] == ["head", "head", "torso", "torso", "tail"]
+
+    splits, catalog = write_dataset(tmp_path)
+    model = ItemKNN.fit(load_fit_data(splits, catalog, "validation"), neighbors=10)
+    queries = [
+        {"user_id": "u1", "target_item_id": "i3", "target_rating": 5.0},   # ItemKNN rank 2, 2 items seen
+        {"user_id": "u4", "target_item_id": "i1", "target_rating": 5.0},
+    ]
+
+    report = segment_report({"itemknn": model}, queries, titled={"i3"})
+
+    assert report["all"]["queries"] == 2
+    assert report["history"]["1-2"]["queries"] == 2
+    assert report["title"]["with title"]["itemknn"]["ndcg_at_10"] == pytest.approx(1 / math.log2(3))
+    assert report["title"]["without title"]["queries"] == 1
