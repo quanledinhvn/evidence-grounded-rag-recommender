@@ -6,7 +6,7 @@ Package này hiện thực lõi nghiên cứu trong `research/systemdessign.md`:
 - candidate union, chuẩn hóa trong query và fusion tất định;
 - full-pipeline removal/retention giữ nguyên factual `seen_item_ids`;
 - signed top-K margin, evaluable-state gate và decision certificate;
-- PAEC exhaustive search cho history ngắn, bounded beam enumeration cho history dài;
+- PAEC level-wise exact search cho history ngắn, bounded beam search cho history dài;
 - contribution, recency, semantic, random và leave-one-out baselines;
 - attribution–intervention gap audit;
 - deterministic template renderer, citation verifier và abstention.
@@ -85,4 +85,11 @@ contribution.
 
 Các test bao phủ trace identity, deterministic rerun, source closure, seen-item
 invariance, candidate regeneration, evaluable gate, certificate integrity,
-selector parity, renderer isolation, fallback/abstention và exact coalition search.
+selector parity, renderer isolation, fallback/abstention và level-wise exact
+coalition search.
+
+Selector đánh giá coalition theo kích thước tăng dần. Nó đánh giá hết một tầng để
+giữ tie-break theo removal effect và retention loss, nhưng dừng trước tầng lớn hơn
+ngay khi tầng hiện tại có coalition dual-valid qua support gate. Quy tắc này vẫn
+cho nghiệm exact theo objective ưu tiên coalition nhỏ hơn; nếu không có coalition
+hợp lệ, selector tiếp tục đến hết evidence budget rồi abstain.

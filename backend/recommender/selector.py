@@ -39,8 +39,16 @@ class PAECSelector:
         )
         evaluated = 0
         valid = []
+        active_size = 0
 
         for coalition in candidates:
+            coalition_size = len(coalition)
+            if coalition_size != active_size:
+                if valid:
+                    break
+
+                active_size = coalition_size
+
             certificate = self.harness.evaluate(
                 profile,
                 factual_run,

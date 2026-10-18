@@ -372,7 +372,7 @@ $$
 
 Để tránh gán cải thiện do support gate cho coalition search, thí nghiệm phải có ablation PAEC decision-only bỏ thành phần support và PAEC support-aware dùng tuple đầy đủ. Nếu không có coalition vừa dual-valid vừa full-supported trong budget, output personalized claim phải abstain.
 
-Với history có kích thước không quá $h_{exact}$, liệt kê mọi coalition trong budget để lấy exact reference. Chỉ dùng branch-and-bound nếu có bound admissible được chứng minh; không được giả định removal effect đơn điệu vì candidate regeneration và normalization có thể phá tính đơn điệu. Với history dài hơn, dùng beam search; beam width và stopping rule được tune trên validation.
+Với history có kích thước không quá $h_{exact}$, search exhaustive theo từng kích thước coalition tăng dần. Search đánh giá hết tầng hiện tại rồi dừng trước tầng lớn hơn ngay khi tìm được ít nhất một coalition dual-valid qua support gate. Đây vẫn là exact reference theo objective từ điển vì mọi coalition lớn hơn chắc chắn thua về $|E|$; các coalition cùng tầng đều được đánh giá để giữ tie-break theo removal effect và retention loss. Nếu chưa có tầng hợp lệ, search tiếp tục đến hết budget. Quy tắc này không giả định removal effect đơn điệu. Chỉ dùng branch-and-bound theo effect nếu có bound admissible được chứng minh. Với history dài hơn, dùng beam search với cùng stopping rule; beam width được tune trên validation.
 
 Nếu $T_P$ là chi phí một pipeline rerun và $h=|H_u^+(t)|$, exhaustive dual test có chi phí:
 
@@ -381,6 +381,8 @@ O\!\left(2T_P\sum_{\ell=1}^{m}{h\choose \ell}\right),
 $$
 
 còn beam search width $b$ có upper bound gần $O(2bmhT_P)$. Mọi method dùng cùng intervention-query budget hoặc phải báo validity–cost curve. Cache chỉ được tái sử dụng khi key gồm user, source subset, intervention type, config và artifact hash.
+
+Hai biểu thức trên là worst case khi không tầng nào trước budget chứa coalition hợp lệ. Nếu tầng hợp lệ nhỏ nhất là $ell^*$, level-wise exact search chỉ đánh giá các tầng từ $1$ đến $ell^*$.
 
 Trên exact subset, báo riêng: validity gap nếu heuristic bỏ lỡ coalition dual-valid; size gap $|E_{heur}|-|E^*|$ khi cả hai dual-valid; và tie-break margin regret khi kích thước bằng nhau. Chỉ gọi heuristic near-minimal khi validity gap bằng $0$ và upper confidence bound của size gap nằm dưới ngưỡng khóa trước.
 

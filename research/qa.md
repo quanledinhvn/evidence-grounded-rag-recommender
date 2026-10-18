@@ -83,7 +83,7 @@ PAEC tìm coalition nhỏ dưới budget $m$ theo thứ tự mục tiêu:
 4. tối đa removal effect;
 5. tối thiểu retention loss.
 
-Với history ngắn, dùng exhaustive search để có nghiệm chuẩn; branch-and-bound chỉ được dùng nếu chứng minh bound admissible, vì full-pipeline effect có thể không đơn điệu. Với history dài, dùng beam search và báo validity gap, size gap cùng tie-break regret trên subset có thể giải exact. Không được gọi nghiệm heuristic là “minimal” nếu chưa chứng minh tối ưu.
+Với history ngắn, dùng level-wise exhaustive search để có nghiệm chuẩn: đánh giá hết từng kích thước tăng dần và dừng sau tầng đầu tiên có coalition hợp lệ. Việc bỏ qua tầng lớn hơn là exact theo objective ưu tiên coalition nhỏ hơn; không giả định full-pipeline effect đơn điệu. Branch-and-bound theo effect chỉ được dùng nếu chứng minh bound admissible. Với history dài, dùng beam search với cùng stopping rule và báo validity gap, size gap cùng tie-break regret trên subset có thể giải exact. Không được gọi nghiệm heuristic là “minimal” nếu chưa chứng minh tối ưu.
 
 ### 4.4 Vai trò của LLM
 

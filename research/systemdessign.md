@@ -255,7 +255,7 @@ PAEC tối ưu tuần tự:
 4. removal effect lớn hơn;
 5. retention loss nhỏ hơn.
 
-Với history không quá $h_{exact}$, controller liệt kê mọi coalition có kích thước không quá $m$. Với history dài, controller dùng beam search theo budget và stopping rule đã khóa. Branch-and-bound chỉ được bật khi bound đã được chứng minh admissible; hệ thống không giả định intervention effect đơn điệu.
+Với history không quá $h_{exact}$, controller liệt kê exhaustive theo từng tầng kích thước tăng dần. Sau khi đánh giá hết một tầng, controller dừng nếu tầng đó có coalition dual-valid và qua support gate; mọi coalition ở tầng lớn hơn chắc chắn thua theo objective ưu tiên số source nhỏ hơn. Trong tầng được chọn, mọi coalition vẫn được đánh giá để giữ tie-break theo removal effect và retention loss. Nếu chưa có tầng hợp lệ, search tiếp tục đến $m$. Với history dài, controller áp dụng cùng stopping rule cho bounded beam search. Quy tắc dừng theo kích thước không giả định intervention effect đơn điệu; branch-and-bound theo effect chỉ được bật khi bound đã được chứng minh admissible.
 
 Các baseline random, recency, semantic, exact contribution, single-source leave-one-out và counterfactual set-greedy dùng cùng maximum raw-source budget. Mọi selector giải thích cùng target factual; không selector nào được đổi item cần giải thích.
 

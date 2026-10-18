@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 import unittest
-
 from dataclasses import replace
 
 from backend.profile import (
@@ -221,8 +220,44 @@ class RecommenderPipelineTests(unittest.TestCase):
 
         self.assertEqual(selection.status, "selected")
         self.assertEqual(selection.coalition_source_ids, ("H1",))
+        self.assertEqual(selection.evaluated_coalitions, 2)
         self.assertTrue(selection.exact)
         self.assertTrue(selection.certificate and selection.certificate.dual_valid)
+
+    def test_exact_selector_stops_after_first_valid_coalition_size(self) -> None:
+        extra_signals = tuple(
+            PreferenceSignal(
+                f"H{index}",
+                f"seen-{index}",
+                4.0,
+                200 + index,
+                "positive",
+                0.1,
+                (),
+            )
+            for index in range(3, 5)
+        )
+        profile = replace(
+            self.profile,
+            positive_signals=self.profile.positive_signals + extra_signals,
+        )
+        config = replace(self.config, evidence_budget=3)
+
+        pipeline = HybridPipeline(
+            self.pipeline.retrievers,
+            config,
+            artifact_manifest_hash="manifest-v1",
+            fallback_item_ids=("fallback", "d", "e"),
+        )
+        selector = PAECSelector(
+            InterventionHarness(pipeline),
+            support_gate=lambda coalition: coalition == ("H1", "H2"),
+        )
+
+        selection = selector.select(profile, pipeline.run(profile), "target")
+
+        self.assertEqual(selection.coalition_source_ids, ("H1", "H2"))
+        self.assertEqual(selection.evaluated_coalitions, 10)
 
     def test_long_history_uses_bounded_attribution_beam(self) -> None:
         extra_signals = tuple(
@@ -258,7 +293,7 @@ class RecommenderPipelineTests(unittest.TestCase):
 
         self.assertFalse(selection.exact)
         self.assertEqual(selection.coalition_source_ids, ("H1",))
-        self.assertLessEqual(selection.evaluated_coalitions, 4)
+        self.assertEqual(selection.evaluated_coalitions, 2)
 
     def test_support_failure_abstains_without_changing_ranking(self) -> None:
         factual = self.pipeline.run(self.profile)
