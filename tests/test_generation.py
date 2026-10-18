@@ -7,7 +7,6 @@ import numpy as np
 from backend.generation.explain import explain_prompt, llm_explain, parse_explanations
 from backend.generation.judge import judge_prompt, parse_judge
 from backend.generation.llm import Gemini
-from backend.generation.rerank import llm_rerank, parse_rerank, rerank_prompt
 from backend.generation.validator import claim_problems, render
 
 
@@ -31,7 +30,6 @@ PACKAGE = {
                "text": "Directors: Greta Gerwig. Cast: Saoirse Ronan"},
     },
 }
-CANDIDATES = PACKAGE["candidates"]
 
 
 class FakeLLM:
@@ -48,32 +46,6 @@ class FakeLLM:
         return {"text": text, "input_tokens": 10, "output_tokens": 5, "latency_ms": 1.0, "cache_hit": False, "error": None if text else "timeout"}
 
 
-# ---------- Q5 rerank ----------
-
-def test_rerank_prompt_uses_short_codes_and_never_sends_ids():
-    prompt = rerank_prompt(PACKAGE, CANDIDATES, k=2)
-
-    assert "C1" in prompt and "Interstellar" in prompt and "Christopher Nolan" in prompt
-    assert "B0INTERST" not in prompt and "REAL-USER-ID" not in prompt
-    assert "Loved the dream layers" in prompt                          # the user's own review is part of the profile
-
-
-def test_parse_rerank_valid_partial_and_fallback():
-    assert parse_rerank('{"item_ids": ["C3", "C1"]}', CANDIDATES, k=2) == (["B0NOTITLE", "B0INTERST"], "llm_valid")
-    assert parse_rerank('{"item_ids": ["C2"]}', CANDIDATES, k=2) == (["B0TITANIC", "B0INTERST"], "llm_completed")
-
-    for bad in ['{"item_ids": ["C9", "C1"]}', '{"item_ids": ["C1", "C1"]}', '{"item_ids": ["C1", "C2", "C3"]}', "not json", None]:
-        assert parse_rerank(bad, CANDIDATES, k=2) == (["B0INTERST", "B0TITANIC"], "hybrid_fallback")
-
-
-def test_llm_rerank_keeps_usage_and_falls_back_on_error():
-    result = llm_rerank(FakeLLM('{"item_ids": ["C2", "C1"]}'), PACKAGE, CANDIDATES, k=2)
-    assert result["ranking"] == ["B0TITANIC", "B0INTERST"] and result["status"] == "llm_valid"
-    assert result["input_tokens"] == 10
-
-    assert llm_rerank(FakeLLM(None), PACKAGE, CANDIDATES, k=2)["status"] == "hybrid_fallback"
-
-
 # ---------- Q6 explain ----------
 
 def test_explain_prompt_cited_shows_source_ids_free_does_not():
@@ -83,7 +55,8 @@ def test_explain_prompt_cited_shows_source_ids_free_does_not():
     assert "[E2]" in cited and "[H1]" in cited and "E5" in cited
     assert "E6" not in cited                                           # only the explained items' sources
     assert "[E2]" not in free and "Christopher Nolan" in free
-    assert "B0INTERST" not in cited + free
+    assert "B0INTERST" not in cited + free and "REAL-USER-ID" not in cited + free   # no Amazon or user ids sent
+    assert "Loved the dream layers" in cited                                    # the user's own review is in the profile
 
 
 def test_parse_explanations_maps_codes_and_keeps_two_claims():
@@ -190,13 +163,13 @@ def test_gemini_does_not_cache_a_cut_answer_and_sends_the_thinking_level(tmp_pat
     assert not (tmp_path / "cache.jsonl").exists()
 
 
-def test_rerank_and_explain_send_a_json_schema():
-    llm = FakeLLM('{"item_ids": ["C1", "C2"]}', '{"items": []}')
-    llm_rerank(llm, PACKAGE, CANDIDATES, k=2)
+def test_explain_sends_a_json_schema():
+    llm = FakeLLM('{"items": []}', '{"items": []}')
     llm_explain(llm, PACKAGE, ["B0INTERST"], cited=True)
+    llm_explain(llm, PACKAGE, ["B0INTERST"], cited=False)
 
-    assert llm.schemas[0]["properties"]["item_ids"]["type"] == "ARRAY"
-    assert "claims" in str(llm.schemas[1])
+    assert "evidence_ids" in str(llm.schemas[0]) and "claims" in str(llm.schemas[1])
+    assert "evidence_ids" not in str(llm.schemas[1])
 
 
 def test_parse_explanations_moves_inline_citations_into_the_id_lists():

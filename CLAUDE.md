@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Hệ gợi ý phim có giải thích dựa trên bằng chứng (CF + BM25 + embedding → fusion → LLM rerank + giải thích bắt buộc trích dẫn) trên Amazon Reviews 2023 – Movies & TV. Đồ án học phần Hệ gợi ý, Thạc sĩ KHMT, HUST. Tổng quan: [README.md](README.md), [docs/overview.md](docs/overview.md); đặc tả: [docs/architecture.md](docs/architecture.md).
+Hệ gợi ý phim có giải thích dựa trên bằng chứng (CF + BM25 + embedding → fusion có gom phiên bản → bằng chứng → LLM giải thích bắt buộc trích dẫn + validator; không xếp lại bằng LLM) trên Amazon Reviews 2023 – Movies & TV. Đồ án học phần Hệ gợi ý, Thạc sĩ KHMT, HUST. Tổng quan: [README.md](README.md), [docs/overview.md](docs/overview.md); đặc tả: [docs/architecture.md](docs/architecture.md).
 
 Thứ tự file này:
 
@@ -37,8 +37,14 @@ Thứ tự file này:
 | `backend/retrieval/fusion.py` | Trộn các nhánh (theo điểm hoặc RRF), tune trọng số; với `editions`: một phiên bản mỗi phim, bỏ mọi phiên bản của phim đã xem |
 | `backend/cf/evaluate.py` | NDCG@10, HR@10, Recall@50 cho mọi model; với `editions` thêm metric "cùng phim" (`same_film`) |
 | `backend/cf/cli.py` | `recsys-cf train / evaluate / recommend / fuse / tune-fusion` cho mọi model |
+| `backend/cf/segments.py` | Metric theo nhóm: độ dài lịch sử, độ phổ biến của target, target có title |
+| `backend/generation/llm.py` | Client Gemini: JSON schema, cache trên đĩa, mức "thinking"; key đọc từ `GEMINI_API_KEY` / `.env` |
+| `backend/generation/sources.py`, `explain.py` | Hiển thị bằng chứng cho LLM (mã C#/H#/E#, không gửi ID thật); LLM giải thích top 3, chế độ "tự do" và "bắt buộc trích dẫn" |
+| `backend/generation/validator.py`, `judge.py` | Kiểm từng câu giải thích (nguồn, đúng phim, tên người, độ giống); LLM giám khảo chấm supported/partial/unsupported |
+| `backend/generation/experiment.py` | Thí nghiệm giải thích (run G) + báo cáo Markdown từng record (`recsys-llm`) |
+| `backend/service.py` | Luồng end-to-end cho một user: hồ sơ → fusion top 10 → bằng chứng → giải thích → validator (`recsys-demo`) |
 | `backend/evidence/evidence.py`, `backend/evidence/cli.py` | Gói bằng chứng [H#]/[E#] cho một query (`recsys-evidence`); bỏ review chỉ nói về sách, bỏ tên giữ chỗ "Various" |
-| `tests/` | 49 test, dữ liệu giả rất nhỏ |
+| `tests/` | 66 test, dữ liệu giả rất nhỏ, LLM giả (không gọi API) |
 
 Mọi model (ItemKNN, BPR, BM25, Dense, Fusion, Popularity) có cùng giao diện `recommend(user_id, limit, exclude)` và `recommend_batch(user_ids, limit)`, trả `{"item_id", "score", "source"}`.
 
@@ -50,7 +56,7 @@ Mọi model (ItemKNN, BPR, BM25, Dense, Fusion, Popularity) có cùng giao diệ
 | `artifacts/movies-tv-2023/queries_{val,test}.parquet` | 657.203 query mỗi pha, mỗi user một target, `as_of` = timestamp target |
 | `artifacts/movies-tv-2023/catalog_enriched.parquet` | 197.943 item; `item_doc` phủ 195.993; 82.840 item Prime Video không có title |
 | `artifacts/movies-tv-2023/reviews.sqlite` | 9.249.801 review dùng làm bằng chứng (4,7 GB) |
-| `artifacts/movies-tv-2023/editions.parquet` | `(item_id, work_id)`: 197.943 item → ~135 nghìn phim; `work_id` = `item_id` nhỏ nhất của phim |
+| `artifacts/movies-tv-2023/editions.parquet` | `(item_id, work_id)`: 197.943 item → 133.694 phim; `work_id` = `item_id` nhỏ nhất của phim |
 | `artifacts/movies-tv-2023/item_vectors.npy` | Vector embedding của mọi item (MiniLM-L6, 384 chiều), dùng chung cho mọi pha |
 | `runs/validation/{itemknn,bm25,dense}/` | Model pha validation (fit trên train) và kết quả trên 20k query validation; `fusion-grid.json` |
 | `runs/validation/{fusion,fusion-editions}/`, `*-eval10k.json` | Fusion pha validation không/có gom phiên bản và kết quả trên 10k query validation (cả metric cùng phim) |
@@ -62,10 +68,14 @@ Mọi model (ItemKNN, BPR, BM25, Dense, Fusion, Popularity) có cùng giao diệ
 | `runs/{itemknn,fusion,fusion-editions}-movies-tv-2023/test_evaluation_50k.json` | Kết quả trên mẫu 50k test, có cả metric cùng phim |
 | `runs/examples/evidence_example.json` | Gói bằng chứng mẫu cho user Harry Potter (hệ thống cuối) |
 | `runs/examples/recommend_5_users_editions.{json,txt}` | Gợi ý + bằng chứng cho 5 query test cố định (seed 42); `recommend_5_users.json` là bản trước khi gom phiên bản |
+| `runs/llm/smoke-10/` | Smoke test 10 record (test): gói bằng chứng, câu trả lời LLM, nhãn giám khảo, cache; báo cáo ở `docs/smoke_test_10_record.md` |
+| `runs/llm/dev-10/`, `runs/llm/dev-inpool-50/`, `runs/rerank/` | Smoke test trên validation: thử LLM xếp lại, learning-to-rank, cross-encoder (đã bỏ khỏi đề tài, giữ số liệu) |
+| `runs/analysis/segments_test50k.json` | Phân tích theo nhóm trên mẫu 50k test |
+| `.env` | `GEMINI_API_KEY=...` — chỉ ở máy local, git-ignore |
 | `runs/cf-movies-tv-2023-full/20261009T135249Z/` | Lượt BPR cũ trên AWS; chỉ còn giá trị tham khảo |
 | `dataset/Movies_and_TV.jsonl`, `dataset/meta_Movies_and_TV.jsonl` | Review thô (17,3 triệu) và metadata thô |
 
-Đặc điểm cần nhớ: trung vị 5 tương tác train mỗi user; split không có review text; một phim có nhiều `parent_asin` (DVD, Blu-ray, Prime Video) — ~92 nghìn item có ít nhất một phiên bản khác, xem bước 10.
+Đặc điểm cần nhớ: trung vị 5 tương tác train mỗi user; split không có review text; một phim có nhiều `parent_asin` (DVD, Blu-ray, Prime Video) — ~93 nghìn item có ít nhất một phiên bản khác, xem bước 10.
 
 ## Bất biến
 
@@ -92,7 +102,7 @@ Trong các lệnh dưới, `python` là `& "$env:LOCALAPPDATA\Temp\fq\.venv\Scri
 ### 0. Unit test (không cần dữ liệu thật, ~15 giây)
 
 ```powershell
-python -m pytest -q -p no:cacheprovider                         # toàn bộ 49 test
+python -m pytest -q -p no:cacheprovider                         # toàn bộ 66 test
 python -m pytest -q -p no:cacheprovider tests/test_retrieval.py  # một file
 ```
 
@@ -100,13 +110,15 @@ python -m pytest -q -p no:cacheprovider tests/test_retrieval.py  # một file
 |---|---|
 | `tests/test_data.py` | Import giữ nguyên split, `review_id`, query, catalog; từ chối dữ liệu hỏng; `reorganize` sắp theo user; enrich làm sạch HTML, `genres` bỏ nhãn không phải thể loại, `item_doc` |
 | `tests/test_profile.py` | Pha validation không thấy split validation; tương tác tại `as_of` bị loại; thích/ghét; tương tác mới nhất thắng; công thức trọng số; title mượn trích đúng phiên bản nguồn |
-| `tests/test_cf.py` | Pha fit đúng split; Popularity; cosine và cắt hàng xóm; ItemKNN ưu tiên phim vừa xem, `because`; BPR không gợi ý phim đã xem; metric, metric cùng phim; CLI |
+| `tests/test_cf.py` | Pha fit đúng split; Popularity; cosine và cắt hàng xóm; ItemKNN ưu tiên phim vừa xem, `because`; BPR không gợi ý phim đã xem; metric, metric cùng phim; chia nhóm (lịch sử, độ phổ biến, title); CLI |
 | `tests/test_retrieval.py` | Lịch sử "đã thích" có trọng số; BM25 tìm phim chung đạo diễn/diễn viên; Dense xếp theo cosine; công thức RRF; Fusion lưu/nạp lại; Fusion một phiên bản mỗi phim, bỏ phiên bản của phim đã xem |
-| `tests/test_editions.py` | Chuẩn hóa title giữ "Season 1"; khóa người bỏ "Various"; gom phiên bản cần chung title/người **và** số lượt rating lệch ≤ 2%; không gộp bản làm lại, mùa khác, phần tiếp theo, bộ sưu tập; mượn title |
+| `tests/test_editions.py` | Chuẩn hóa title giữ "Season 1", xử lý "X, The:", "Part One", năm trong ngoặc; khóa người bỏ "Various"; gom phiên bản cần chung title/người **và** số lượt rating gần nhau (cùng title ≤ 5%, chỉ cùng người ≤ 2%); không gộp bản làm lại, mùa khác, phần tiếp theo, bộ sưu tập; mượn title |
 | `tests/test_reviews.py` | Chỉ giữ review hữu ích của item trong catalog; lấy review trước `as_of`, loại review của chính user |
 | `tests/test_evidence.py` | [H#] dùng review của chính user; [E#] gồm metadata và review của người khác trước `as_of`; bỏ review chỉ nói về sách; tên viết tắt ("Michael E. Satrazemis") không bị cắt; bỏ "Various"; title mượn trích đúng phiên bản nguồn |
+| `tests/test_generation.py` | Prompt không chứa `user_id`/mã Amazon; bản trích dẫn có [E#]/[H#], bản tự do không; parse JSON, tối đa 2 câu, tách mã viết trong câu; validator gọi đúng tên từng lỗi, cho phép tên chính phim; renderer; giám khảo; cache Gemini không lưu key, không cache câu trả lời bị cắt |
+| `tests/test_service.py` | Luồng end-to-end giữ thứ tự fusion, chỉ giữ câu hợp lệ, một lời gọi LLM; user không có lịch sử → `cold_start`, không gọi LLM |
 
-Kết quả mong đợi: `49 passed`.
+Kết quả mong đợi: `66 passed`.
 
 ### 1. Nhập split — `backend/data/importer.py`
 
@@ -267,14 +279,55 @@ python -m backend.data.cli group-editions --catalog $a/catalog_enriched.parquet 
 - **Vấn đề:** một phim có nhiều `item_id` (DVD, Blu-ray, VHS, nhiều bản Prime Video). Không gom thì (a) user đã xem "Cast Away" bản Prime vẫn được gợi ý "Cast Away" bản DVD; (b) một danh sách có ba bản "Cast Away"; (c) gợi ý bản DVD khi target là bản Blu-ray bị tính là **trượt**.
 - **Input:** `catalog_enriched.parquet` (cột `title`, `item_doc`, `rating_number`).
 - **Các bước và lý do:**
-  1. Hai item là **ứng viên** cùng phim nếu chung title chuẩn hóa (bỏ nhãn định dạng trong ngoặc như "[Blu-ray]", "(Two-Disc Special Edition)", nhưng giữ "(Season 1)") hoặc chung đạo diễn đầu + diễn viên đầu (Prime Video thường chỉ có tên người).
-  2. Chỉ gộp khi **số lượt rating lệch ≤ 2%**: Amazon gộp rating mọi định dạng của một phim (Cast Away: DVD 16.753, ba bản Prime 16.747 / 16.755 / 16.756), còn bản làm lại và các mùa khác nhau có số lượt khác hẳn (A Christmas Carol 1951 ~9.900, bản 1984 ~13.700; Under the Dome 20.010 / 12.169).
+  1. Hai item là **ứng viên** cùng phim nếu chung title chuẩn hóa (bỏ nhãn định dạng trong ngoặc như "[Blu-ray]", "(Two-Disc Special Edition)" và năm trong ngoặc "(2010)", nhưng giữ "(Season 1)"; "Twilight Saga, The: …" → "the twilight saga …"; "Part One" → "part 1") hoặc chung đạo diễn đầu + diễn viên đầu (Prime Video thường chỉ có tên người).
+  2. Chỉ gộp khi **số lượt rating gần bằng nhau**: Amazon gộp rating mọi định dạng của một phim (Cast Away: DVD 16.753, ba bản Prime 16.747 / 16.755 / 16.756), còn bản làm lại và các mùa khác nhau có số lượt khác hẳn (A Christmas Carol 1951 ~9.900, bản 1984 ~13.700; Under the Dome 20.010 / 12.169). Ngưỡng: **cùng title lệch ≤ 5%** (số lượt được ghi ở các thời điểm khác nhau: Eclipse 20.129 / 20.797, lệch 3,3%), **chỉ cùng người lệch ≤ 2%** (tín hiệu yếu hơn).
   3. Chặn gộp dây chuyền: hai nhóm đã có title thì title phải trùng (không nối "Spider-Man 2" với "Spider-Man 3" qua một bản Prime không title); bỏ tên giữ chỗ "Various"/"None" (3.494 item "Various|Various" từng nối American Beauty với Chinatown); bộ sưu tập ("8-Film Collection", "Complete Series", box set) không gộp với gì.
   4. `work_id` = `item_id` nhỏ nhất của nhóm (union-find).
-- **Output:** `editions.parquet` `(item_id, work_id)`: 197.943 item → 136.414 phim; 90.068 item có ít nhất một phiên bản khác. Mất ~15 giây.
+- **Output:** `editions.parquet` `(item_id, work_id)`: 197.943 item → 133.694 phim; 92.681 item có ít nhất một phiên bản khác. Mất ~15 giây.
 - **Dùng ở:** `fuse --editions` (một phiên bản mỗi phim, bỏ mọi phiên bản của phim đã xem), `evaluate --editions` (metric cùng phim), `recsys-evidence --editions` (mượn title).
-- **Ví dụ:** `B00003CXRP` (Cast Away DVD), `B0026NZR98`, `B0044WUIHA`, `B0026O475M` (Prime) → một phim; `B0152ZY7KQ` và `B015301ZQ4` (cùng một mùa The Walking Dead) → một phim; Harry Potter 1–4 tách riêng.
-- **Hạn chế đã biết:** gộp thiếu khi title khác cách viết ("Harry Potter and Sorcerer's Stone (Special Edition/2 Disc/BD" không gộp với "… the Sorcerer's Stone (4K)"); một series Prime có thể dùng chung số lượt rating cho nhiều mùa nên các mùa bị gộp — ảnh hưởng nhỏ: chỉ 0,08% target test là phiên bản khác của phim user đã xem.
+- **Ví dụ:** `B00003CXRP` (Cast Away DVD), `B0026NZR98`, `B0044WUIHA`, `B0026O475M` (Prime) → một phim; `B0152ZY7KQ` và `B015301ZQ4` (cùng một mùa The Walking Dead) → một phim; 7 bản *Eclipse* và các bản *Breaking Dawn Part 1* (kể cả "Twilight Saga, The: …", "Part One") → mỗi phim một nhóm; Harry Potter 1–4, Breaking Dawn 1/2, Aladdin 1992/2019 tách riêng.
+- **Hạn chế đã biết:** gộp thiếu khi title khác cách viết ("Harry Potter and Sorcerer's Stone (Special Edition/2 Disc/BD" không gộp với "… the Sorcerer's Stone (4K)"); một series có thể dùng chung số lượt rating cho nhiều mùa nên các mùa bị gộp (nhóm lớn nhất: "Downton Abbey", 24 item) — ảnh hưởng nhỏ: chỉ 0,12% target test là phiên bản khác của phim user đã xem.
+
+### 11. Giải thích có trích dẫn và demo — `recsys-demo` (`backend/service.py`)
+
+```powershell
+python -m backend.service --user-id AGXVBIUFLFGMVLATYXHJYL4A5Q7Q --as-of 1530556520803 --phase test   # thêm --json để xem toàn bộ
+```
+
+- **Cần:** API key Gemini trong biến môi trường `GEMINI_API_KEY` hoặc file `.env` ở gốc repo (`GEMINI_API_KEY=...`, đã git-ignore, **không bao giờ commit**). Mọi lời gọi được cache ở `runs/llm/demo_cache.jsonl`; chạy lại cùng user không tốn token.
+- **Input:** user, `as_of`, pha; model mặc định `gemini-3.5-flash-lite` (`--model` để nâng cấp, ví dụ `gemini-3.5-flash`).
+- **Các bước và lý do:**
+  1. Hồ sơ (bước 3) + **fusion có gom phiên bản, top 10 giữ nguyên thứ tự fusion** — không xếp lại: LLM, cross-encoder và learning-to-rank đều đã thử và không vượt thứ tự fusion (xem mục Tiến độ).
+  2. Gói bằng chứng cho top 10 (bước 9), title mượn cho phim không có title.
+  3. **Một lời gọi LLM** giải thích top 3 (`backend/generation/explain.py`): prompt chỉ chứa mã C1–C3, [H#], [E#] và nội dung nguồn — **không gửi `user_id` hay mã Amazon**; nội dung review nằm trong `<data>` và model được dặn không làm theo lệnh trong đó. Đầu ra ép đúng JSON schema `{"items": [{"item_id": "C1", "claims": [{"text", "evidence_ids", "history_ids"}]}]}`, tối đa 2 câu/phim; mã [E#] model lỡ viết trong câu được tách ra và đưa vào danh sách nguồn.
+  4. **Validator** (`backend/generation/validator.py`) kiểm từng câu: có nguồn; E# tồn tại và **thuộc đúng phim** đang giải thích; H# thuộc hồ sơ; tên người/tựa (2+ từ viết hoa) có trong nguồn được dẫn hoặc là tên chính phim đó; độ giống MiniLM giữa câu và nguồn ≥ ngưỡng (mặc định 0,3, chưa hiệu chỉnh). Câu lỗi bị bỏ; phim không còn câu nào → `evidence_unavailable`.
+  5. Ghép câu hợp lệ kèm trích dẫn từ ID đã kiểm tra (renderer tự chèn `[E2][H1]`, không dùng chữ của model).
+- **Output:** top 10 kèm `found_by` (nhánh fusion), top 3 kèm lời giải thích + nguồn được dẫn; `trace` có token, độ trễ. User không có phim nào đã chấm điểm → `cold_start`, không gọi LLM.
+- **Ví dụ** (user Harry Potter): 1. *Harry Potter 3* (đúng target) — "You previously enjoyed the Harry Potter and the Chamber of Secrets movie, and this is another installment in the franchise [E1][E2][H1]. A reviewer mentions enjoying the well-crafted story and time travel elements [E4]." Một lời gọi ~2.300 token, ~20 s tổng (phần lớn nạp model).
+
+### 12. Thí nghiệm giải thích (run G) và smoke test — `recsys-llm` (`backend/generation/experiment.py`)
+
+```powershell
+# Smoke test 10 record, kèm báo cáo chi tiết từng bước
+python -m backend.generation.experiment --phase test --sample 5 --with-target 5 --output-dir runs/llm/smoke-10 --report docs/smoke_test_10_record.md
+# Thí nghiệm chính (chưa chạy): 200 user test ngẫu nhiên
+python -m backend.generation.experiment --phase test --sample 200 --output-dir runs/llm/test-200
+```
+
+- **Mẫu:** `--sample` query ngẫu nhiên (`Random(42)`, không chọn theo việc hệ thống trúng target) + `--with-target` query đầu tiên trong 5.000 query ngẫu nhiên có target trong top 10 (để xem giải thích của gợi ý đúng; báo riêng).
+- **Các bước:** gói bằng chứng (lưu `packages.jsonl`, chạy lại thì dùng tiếp) → LLM giải thích top 3 hai lần: **tự do** (cùng thông tin, không có mã nguồn) và **bắt buộc trích dẫn** → validator cho bản trích dẫn → **giám khảo** `gemini-3.5-flash` (thinking low, JSON schema) chấm từng câu *supported / partial / unsupported* so với toàn bộ nguồn của phim và lịch sử → `summary.json`, `explain.json`, `manual_check.csv` (40 câu để chấm tay), và `--report` (Markdown từng record).
+- **Chỉ số:** NDCG@10/HR@10 cùng phim của từng nhóm; số câu, số phim có giải thích (độ phủ), tỉ lệ supported/unsupported cho tự do, trích dẫn trước và sau validator; lý do validator loại; bảng ngưỡng độ giống 0–0,5; token, độ trễ p50/p95.
+- **Chi phí:** khoảng 1.600 + 300 token mỗi lời gọi giải thích; giám khảo ~3.200 + 1.200 token mỗi user.
+
+### 13. Phân tích theo nhóm — `python -m backend.cf.segments`
+
+```powershell
+python -m backend.cf.segments --member itemknn=runs/itemknn-movies-tv-2023/test --member bm25=runs/bm25-movies-tv-2023/test `
+  --member fusion=runs/fusion-editions-movies-tv-2023/test --queries $a/queries_test.parquet --catalog $a/catalog_enriched.parquet `
+  --editions $a/editions.parquet --query-limit 50000 --output runs/analysis/segments_test50k.json
+```
+
+- Chia query theo **độ dài lịch sử** (3–5, 6–20, > 20; tập 5-core nên không có 1–2), **độ phổ biến của target** (head = top 1% catalog, torso = 9% tiếp, tail = 90% còn lại, tính từ dữ liệu fit) và **target có title hay không**; báo NDCG@10, HR@10, Recall@20, Recall@50 cùng phim cho từng model. Mất ~15 phút trên mẫu 50k.
 
 ---
 
@@ -282,13 +335,13 @@ python -m backend.data.cli group-editions --catalog $a/catalog_enriched.parquet 
 
 Các mục dưới đây thay đổi theo thời gian; phần trên là thông tin cố định của đồ án.
 
-## Tiến độ (cập nhật 2026-10-17)
+## Tiến độ (cập nhật 2026-10-18)
 
 | Hạng mục | Tác dụng trong đồ án | Trạng thái |
 |---|---|---|
 | Nhập 3 split | Biến CSV gốc thành bảng chuẩn và **tách target đánh giá ra file query riêng**, để model không bao giờ thấy đáp án. Là nền cho mọi bước sau. | Xong; sắp theo user để đọc nhanh |
 | Nối metadata, `genres`, `item_doc` | Gắn nội dung phim vào từng item và tạo một văn bản mô tả chung. Không có bước này thì không làm được BM25, embedding, bằng chứng [E#]. | Xong |
-| Gom phiên bản (`editions.parquet`) | Biết item nào là cùng một phim (DVD/Blu-ray/Prime): không gợi ý lại phim đã xem dưới bản khác, không lặp một phim trong danh sách, đo đúng "trúng phim", cho phim Prime mượn title. | Xong 17/10; 136.414 phim từ 197.943 item |
+| Gom phiên bản (`editions.parquet`) | Biết item nào là cùng một phim (DVD/Blu-ray/Prime): không gợi ý lại phim đã xem dưới bản khác, không lặp một phim trong danh sách, đo đúng "trúng phim", cho phim Prime mượn title. | Xong 17/10, sửa 18/10 (Twilight); 133.694 phim từ 197.943 item |
 | ① Hồ sơ người dùng | Tóm tắt sở thích của user **tại thời điểm gợi ý**; đầu vào cho bằng chứng [H#]. | Xong, ~0,3 s/user |
 | ② ItemKNN | Nhánh CF chính: "người xem A thường xem B", ưu tiên phim vừa xem; `because` cho sẵn bằng chứng. | Xong, đã tune và đánh giá |
 | ② BPR-MF | Baseline học máy cổ điển (run B). | Xong |
@@ -299,8 +352,10 @@ Các mục dưới đây thay đổi theo thời gian; phần trên là thông t
 | Đánh giá | Đo khách quan, cùng một giao thức cho mọi run A–G. | Xong |
 | Kho review | 9,25 triệu review làm nguồn bằng chứng ý kiến. | Xong |
 | ④ Gói bằng chứng | Đưa cho LLM chỉ những gì có nguồn: [H#] lịch sử, [E#] metadata và review trước `as_of`. | Xong; đã chạy trên 6 user thật (ví dụ bên dưới), < 2 s cho 3 ứng viên |
-| ⑤ LLM rerank + giải thích, ⑥ validator | Xếp lại top 20 → top 10 và giải thích top 3 bắt buộc trích dẫn; validator loại câu không có nguồn. Đóng góp chính của đề tài. | Chưa làm — chờ chọn LLM |
-| Service, API, run A–G, báo cáo | Ghép mọi bước thành một luồng, chạy bảng thí nghiệm và viết báo cáo. | Chưa làm |
+| Xếp lại top 20 (LLM, cross-encoder, learning-to-rank) | Thử xem có cách nào xếp lại pool của fusion tốt hơn không (run F). | **Bỏ khỏi đề tài 18/10**: không cách nào vượt thứ tự fusion (kết quả âm, bảng bên dưới) |
+| ⑤ LLM giải thích top 3 có trích dẫn, ⑥ validator, giám khảo | Lý do kèm [E#]/[H#] cho từng gợi ý; validator loại câu không kiểm được; LLM giám khảo đo tỉ lệ câu đúng nguồn. **Đóng góp chính.** | Xong code 18/10 (Gemini `gemini-3.5-flash-lite`, giám khảo `gemini-3.5-flash`); smoke test 10 record; chưa chạy 200 user |
+| Demo end-to-end (`recsys-demo`) | Một lệnh: hồ sơ → fusion → bằng chứng → giải thích → validator. | Xong 18/10 |
+| Run G 200 user, chấm tay, báo cáo, slide | Số liệu chính cho câu hỏi "giải thích bắt buộc trích dẫn có đáng tin hơn"; viết báo cáo. | Chưa làm |
 
 Kết quả trên toàn bộ 657.203 query test:
 
@@ -317,19 +372,66 @@ Mọi dòng là toàn bộ 657.203 query test, trừ Dense (mẫu cố định 5
 
 Fusion so với ItemKNN trên toàn bộ test: NDCG@10 +14%, HR@10 +17%, Recall@50 +19% (tương đối) — khớp mức tăng trên validation (+15% NDCG, +19% Recall@50), nên cấu hình tune trên validation đứng vững. Đánh đổi: độ phủ catalog trong top 50 giảm từ 99,8% (ItemKNN) xuống 92,6% vì prior popularity kéo gợi ý về phim phổ biến.
 
-**Gom phiên bản (17/10)** — mẫu 50.000 query test (seed 42), model pha test; "đúng mã" = target đúng `item_id` (metric gốc), "cùng phim" = bất kỳ phiên bản nào của phim target (bước 10):
+**Gom phiên bản (17/10, số chạy lại 18/10 sau khi sửa gom Twilight)** — mẫu 50.000 query test (seed 42), model pha test; "đúng mã" = target đúng `item_id` (metric gốc), "cùng phim" = bất kỳ phiên bản nào của phim target (bước 10):
 
 | Phương pháp | NDCG@10 đúng mã | HR@10 đúng mã | Recall@50 đúng mã | NDCG@10 cùng phim | HR@10 cùng phim | Recall@50 cùng phim |
 |---|---:|---:|---:|---:|---:|---:|
-| ItemKNN | 4,91% | 7,72% | 11,9% | 5,49% | 8,71% | 13,5% |
-| Fusion (E) | 5,63% | 9,02% | 14,2% | 6,31% | 10,16% | 16,2% |
-| **Fusion + gom phiên bản (hệ thống cuối)** | 5,58% | 8,83% | 13,6% | **6,43%** | **10,38%** | **16,6%** |
+| ItemKNN | 4,91% | 7,72% | 11,9% | 5,51% | 8,72% | 13,6% |
+| Fusion (E) | 5,63% | 9,02% | 14,2% | 6,33% | 10,18% | 16,2% |
+| **Fusion + gom phiên bản (hệ thống cuối)** | 5,57% | 8,81% | 13,6% | **6,46%** | **10,40%** | **16,6%** |
 
-- **Metric gốc đánh giá thấp mọi phương pháp ~12%** (fusion 5,63% → 6,31% khi tính cùng phim): gợi ý bản DVD khi target là bản Blu-ray vẫn là gợi ý đúng. Từ nay báo cả hai; metric cùng phim là chính cho hệ thống cuối.
-- Gom phiên bản trong fusion: **+1,9% NDCG@10, +2,2% HR@10, +2,4% Recall@50** (tương đối, metric cùng phim) — chỗ của các bản trùng được nhường cho phim khác. Target rating ≥ 4: 7,18% → 7,32%. Theo metric đúng mã thì giảm nhẹ (5,63% → 5,58%) vì chỉ giữ một bản mỗi phim, không nhất thiết đúng bản target — hệ quả mong muốn, không phải lỗi.
-- Validation (mẫu 10k, cùng phim): fusion 7,61% / 11,86% / 17,8% → có gom 7,66% / 11,99% / 18,2% — cùng chiều với test.
-- Giá phải trả: loại mọi phiên bản của phim đã xem làm mất các target "mua lại" (target là bản khác của phim đã xem) — chỉ 0,08% query test, 0,14% validation.
+- **Metric gốc đánh giá thấp mọi phương pháp ~12%** (fusion 5,63% → 6,33% khi tính cùng phim): gợi ý bản DVD khi target là bản Blu-ray vẫn là gợi ý đúng. Từ nay báo cả hai; metric cùng phim là chính cho hệ thống cuối.
+- Gom phiên bản trong fusion: **+2,0% NDCG@10, +2,2% HR@10, +2,2% Recall@50** (tương đối, metric cùng phim) — chỗ của các bản trùng được nhường cho phim khác. Target rating ≥ 4: 7,20% → 7,35%. Theo metric đúng mã thì giảm nhẹ (5,63% → 5,57%) vì chỉ giữ một bản mỗi phim, không nhất thiết đúng bản target — hệ quả mong muốn, không phải lỗi.
+- Validation (mẫu 10k, cùng phim): fusion 7,64% / 11,91% / 17,9% → có gom 7,69% / 12,04% / 18,2% — cùng chiều với test.
+- Giá phải trả: loại mọi phiên bản của phim đã xem làm mất các target "mua lại" (target là bản khác của phim đã xem) — 0,12% query test.
 - Độ phủ catalog (mẫu 50k): 69,2% → 69,4%.
+- Lần đầu (ngưỡng 2% cho mọi khóa) cho 6,43% / 10,38% / 16,6%; sửa 18/10 (cùng title cho lệch 5%, chuẩn hóa "X, The:", "Part One", năm) chỉ đổi kết quả ở chữ số thứ hai nhưng bỏ được lỗi gợi ý lại phim đã xem thấy trong smoke test.
+
+**Phân tích theo nhóm (18/10)** — mẫu 50k test, metric cùng phim, NDCG@10 / Recall@20 / Recall@50 (`runs/analysis/segments_test50k.json`):
+
+| Nhóm | Số query | ItemKNN | BM25 | Fusion + gom phiên bản |
+|---|---:|---|---|---|
+| Tất cả | 50.000 | 5,51% / 10,8% / 13,6% | 1,57% / 4,6% / 6,7% | 6,46% / 13,0% / 16,6% |
+| Lịch sử 3–5 phim | 20.533 | 6,36% / 12,1% / 15,0% | 1,81% / 5,4% / 7,8% | 7,31% / 14,3% / 18,2% |
+| Lịch sử 6–20 | 25.276 | 5,17% / 10,3% / 13,2% | 1,46% / 4,2% / 6,1% | 6,10% / 12,7% / 16,2% |
+| Lịch sử > 20 | 4.191 | 3,44% / 6,7% / 8,5% | 1,06% / 3,1% / 4,6% | 4,49% / 8,7% / 10,7% |
+| Target phổ biến (top 1%) | 13.150 | 9,56% / 20,6% / 26,6% | 1,44% / 5,4% / 8,7% | 11,20% / 25,2% / 34,2% |
+| Target trung bình (9% tiếp) | 15.619 | 5,34% / 9,4% / 11,4% | 1,71% / 4,7% / 6,5% | 6,67% / 12,3% / 14,5% |
+| Target hiếm (90% còn lại) | 21.231 | 3,13% / 5,7% / 7,1% | 1,55% / 4,0% / 5,5% | 3,37% / 6,0% / 7,2% |
+| Target có title | 21.115 | 5,90% / 10,4% / 12,6% | 2,11% / 5,6% / 7,8% | 6,80% / 12,4% / 14,7% |
+| Target không có title | 28.885 | 5,23% / 11,0% / 14,3% | 1,17% / 3,9% / 5,8% | 6,21% / 13,5% / 18,0% |
+
+- Tập 5-core nên không có user 1–2 phim. User có lịch sử dài lại khó đoán hơn (gu đa dạng, target cuối cùng khó).
+- Fusion giúp nhiều nhất với **phim phổ biến** (Recall@50 26,6% → 34,2%, do prior popularity), gần như không giúp **phim hiếm** (7,1% → 7,2%). Phim hiếm là chỗ BM25 tương đối mạnh nhất (gần một nửa ItemKNN, so với ~1/7 ở phim phổ biến) nhưng vẫn thua ItemKNN → không có nhóm nào nhánh nội dung thắng nhánh CF.
+- BM25 tốt gấp đôi khi target có title (2,11% so với 1,17%): `item_doc` của phim không title chỉ có tên người.
+- **Recall@20 = 13,0%**: chỉ khoảng 1/8 user có phim đúng trong 20 ứng viên đầu — trần của mọi bước xếp lại sau fusion.
+
+**Xếp lại pool top 20 — kết quả âm, bỏ khỏi đề tài (18/10).** Smoke test trên validation, 50 user có target trong pool (50 user đầu của mẫu 5.000 query, seed 42), metric cùng phim; mã đã xóa khỏi repo, số liệu ở `runs/llm/dev-inpool-50/`, `runs/rerank/`:
+
+| Cách xếp lại | NDCG@10 | HR@10 | P(tốt hơn fusion)* | Chi phí |
+|---|---:|---:|---:|---|
+| **Giữ thứ tự fusion** | **53,7%** | **86%** | — | 0 |
+| Learning-to-rank (HistGradientBoosting, 11 đặc trưng, train 29.747 user validation khác) | 51,9% | 80% | 16% | vài phút CPU |
+| LLM `gemini-3.5-flash-lite`, có thẻ bằng chứng | 48,7% | 76% | 15% | ~2.500 token/user |
+| LLM, chỉ title | 44,6% | 72% | 2% | ~1.500 token/user |
+| Cross-encoder `BAAI/bge-reranker-base` | 31,3% | 58% | 0% | 15,8 s/user (CPU) |
+
+\* bootstrap 2.000 lần trên 50 user. Learning-to-rank trên 690 user có target trong pool: 54,2% so với 53,7% của fusion; trên cả 5.000 user 7,47% so với 7,41% — ngang nhau. Permutation importance: bỏ "hạng fusion" làm NDCG giảm 13,7 điểm, mọi đặc trưng khác < 1 điểm → thứ tự fusion đã gần tối ưu với các tín hiệu có sẵn. Cross-encoder và LLM chỉ đọc nội dung nên không thấy tín hiệu "người xem phim A xem tiếp phim B". Điểm đáng ghi: thẻ bằng chứng giúp LLM xếp tốt hơn (48,7% so với 44,6%). LLM rerank bị fallback 1/50 lần (lặp mã C4), dù đã ép JSON schema.
+
+**Smoke test 10 record, hệ thống cuối (18/10)** — chi tiết từng bước ở [docs/smoke_test_10_record.md](docs/smoke_test_10_record.md); 5 user test ngẫu nhiên (1/5 trúng) + 5 user có target trong top 10:
+
+| Giải thích (30 phim) | Số câu | Phim có giải thích | supported | unsupported |
+|---|---:|---:|---:|---:|
+| Tự do (cùng thông tin, không mã nguồn) | 60 | 30 | 72% | 17% |
+| Bắt buộc trích dẫn, sau validator | 33 | 27 | 88% | 3% |
+
+- Bắt buộc trích dẫn giảm câu sai rõ rệt, đổi lại nói ít hơn và từ chối 3/30 phim (`evidence_unavailable`). Câu sai của bản tự do chủ yếu là gán sở thích không có trong lịch sử.
+- Validator: kiểm ID/phim/tên không bắt lỗi nào lần này; lọc độ giống (0,3) loại nhầm 1 câu đúng và giữ 1 câu sai → chưa hữu ích, cần hiệu chỉnh hoặc bỏ.
+- Vấn đề định tính: câu đúng nguồn nhưng không phải lý do (review kể đọc sách Tolkien hồi nhỏ); trích ý khen nhỏ trong review chê; dẫn thừa nguồn (2,1 nguồn/câu).
+- Chi phí hệ thống cuối: 1 lời gọi LLM/user, ~1.600 token vào + ~300 ra, p50 1,6 s.
+- Smoke test tìm ra lỗi gom phiên bản (fan Twilight được gợi ý lại *Eclipse* và *Breaking Dawn Part 1* đã xem) → đã sửa `editions.py`.
+
+**Các smoke test LLM trước đó (validation, 18/10)** tìm và sửa: giám khảo `gemini-3.5-flash` dùng hết ngân sách output cho "thinking" → JSON bị cắt (nay thinking low, 4.096 token, không cache câu trả lời bị cắt); model trả mảng thay vì object (nay ép `responseSchema`); model chèn `[E#]` vào câu (nay tách ra); validator bắt nhầm tên chính phim đang giải thích (nay cho phép).
 
 **Ví dụ gợi ý + bằng chứng (hệ thống cuối, 17/10)** — 5 query test cố định (`Random(42).sample(…, 5)`) và user Harry Potter; đầy đủ ở `runs/examples/recommend_5_users_editions.{txt,json}` và `runs/examples/evidence_example.json`:
 
@@ -392,36 +494,24 @@ Phát hiện khác (validation):
 - BPR yếu vì bỏ qua thứ tự thời gian, chưa hội tụ (AUC còn tăng ở epoch 60) và dữ liệu thưa.
 - Embedding chạy CPU chậm: bge-small (~29 tài liệu/s) được thay bằng MiniLM-L6 với 64 token (~51 tài liệu/s); ghi là hạn chế trong báo cáo.
 
-## Việc tiếp theo (kế hoạch đề xuất 17/10)
+## Việc tiếp theo (cập nhật 18/10)
 
-**Giai đoạn 1 — Hoàn thiện phần truy xuất cho báo cáo** (không cần LLM; dùng mẫu 50k test và các model đã có, mỗi phân tích vài phút)
+Đã quyết: **bỏ bước xếp lại** (giữ thứ tự fusion); LLM chỉ làm giải thích có trích dẫn; dùng Gemini, mức tiết kiệm (`gemini-3.5-flash-lite` để sinh, `gemini-3.5-flash` làm giám khảo), nâng model sau khi hoàn thiện.
 
-1. Phân tích theo nhóm: độ dài lịch sử user (1–2, 3–5, 6–20, > 20 tương tác), độ phổ biến của target (phổ biến / trung bình / hiếm), target có hay không có title. So sánh ItemKNN, BM25, Fusion. Mục đích: trả lời "nhánh nội dung giúp ai" — kết quả trung bình cho thấy nó gần như không giúp, nhưng có thể giúp user mới hoặc phim hiếm.
-2. Đo Recall@20 của fusion (kích thước pool đưa vào LLM) để ước lượng có bao nhiêu user trong mẫu LLM có target trong pool.
-3. Chọn 3–5 ví dụ định tính cho báo cáo — **đã có 6 ví dụ** (bảng trên); bổ sung vài ca nhánh BM25 đóng góp nếu phân tích nhóm cho thấy.
-4. (Nhỏ) Lọc thêm review nói về dịch vụ (thuê, phụ đề, ứng dụng) khi chọn bằng chứng; làm các phân tích trên bằng metric cùng phim.
+1. **Hiệu chỉnh trên validation** (~50 user, ~0,5 triệu token): chốt ngưỡng độ giống của validator (hoặc bỏ bước này) và chỉnh prompt giải thích — chỉ nêu lý do liên quan sở thích của user, không trích ý trái với ý chính của review, mỗi câu dẫn tối đa 2–3 nguồn. Khóa prompt trước khi chạy test.
+2. **Run G trên 200 user test ngẫu nhiên** (~2 triệu token): tự do vs. bắt buộc trích dẫn trước/sau validator; báo supported/unsupported, độ phủ, token, độ trễ.
+3. **Chấm tay 30–50 câu** (`manual_check.csv`) để đo độ tin của giám khảo — cần người làm.
+4. (Tùy chọn) Chạy lại phần giải thích bằng model mạnh hơn (`--model gemini-3.5-flash`) trên cùng mẫu để so sánh chi phí/chất lượng.
+5. Cập nhật `docs/overview.md`, `docs/architecture.md` theo thiết kế cuối (không rerank); viết báo cáo và slide (khung ở [docs/overview.md](docs/overview.md) mục 7): bảng A–E, run G, các kết quả âm (RRF, embedding xếp lại, xếp lại pool), phát hiện về phiên bản, phân tích theo nhóm, ví dụ từ smoke test.
 
-**Giai đoạn 2 — LLM** (chờ chốt LLM, xem "Quyết định đang chờ")
-
-5. LLM rerank: top 20 của fusion + gói bằng chứng → top 10, đầu ra JSON `{"item_ids": [...]}`; ID lạ, trùng, sai schema hoặc timeout → giữ thứ hạng fusion (Q5 trong [docs/architecture.md](docs/architecture.md)).
-6. LLM giải thích top 3: mỗi câu kèm `[E#]`/`[H#]` (Q6).
-7. Validator: ID nguồn tồn tại và đúng phim, `H#` thuộc hồ sơ, tên người/thể loại được nhắc có trong bằng chứng, độ giống embedding giữa câu và bằng chứng; câu sai bị loại.
-8. Run F (LLM rerank) và G (giải thích bắt buộc trích dẫn so với không bắt buộc) trên mẫu user cố định (seed 42): 200 user cho giải thích; rerank đo thêm riêng trên nhóm user có target trong pool. Báo token, độ trễ, tỉ lệ fallback; chấm claim support bằng LLM và thủ công 30–50 mẫu.
-
-**Giai đoạn 3 — Demo và báo cáo**
-
-9. Một lệnh demo end-to-end cho một user: hồ sơ → fusion → bằng chứng → LLM → câu giải thích có trích dẫn.
-10. Viết báo cáo theo khung trong [docs/overview.md](docs/overview.md) mục 7, gồm các kết quả âm (RRF, embedding xếp lại), đánh đổi độ phủ của prior popularity, và việc metric đúng mã đánh giá thấp ~12% do nhiều phiên bản.
-
-Vấn đề mở không chặn tiến độ: `preprocess.py` và các file mà [docs/data/raw-dataset-survey.md](docs/data/raw-dataset-survey.md) nhắc tới không có trong repo; cần hỏi người viết khảo sát nếu dùng Dense-Works.
+Vấn đề mở không chặn tiến độ: `preprocess.py` và các file mà [docs/data/raw-dataset-survey.md](docs/data/raw-dataset-survey.md) nhắc tới không có trong repo; không dùng Dense-Works (giữ 5-core, gom phiên bản thay cho "Works").
 
 ## Quyết định đang chờ
 
-- **LLM nào** cho bước 5–8: API (chất lượng tốt, tốn phí theo token) hay model chạy local (miễn phí nhưng máy này không có GPU, chạy model vài tỉ tham số trên CPU sẽ rất chậm). Ước lượng cho 200 user × 2 lời gọi: khoảng 1–1,5 triệu token đầu vào và 0,2 triệu token đầu ra.
-- **Ngân sách token** và **hạn nộp**.
-- **Dense-Works** cho giai đoạn LLM hay giữ 5-core: với Recall@50 cùng phim = 16,6% của hệ thống cuối, chỉ khoảng 1/6 user có target trong pool; đề xuất giữ 5-core và đo rerank riêng trên nhóm có target trong pool.
+- Đồng ý chạy bước 1–2 ở trên (~2,5 triệu token Gemini).
+- Mẫu báo cáo / slide của trường (nếu có) và hạn nộp.
 
-## Nhật ký phiên làm việc (13–17/10/2026)
+## Nhật ký phiên làm việc (13–18/10/2026)
 
 - Kiểm tra nhánh `f/quan`; chạy thử luồng profile → CF trên dữ liệu thật, không rò rỉ.
 - So sánh BPR với baseline đơn giản → BPR yếu; cài ItemKNN, tune trên validation, đánh giá full test.
@@ -430,3 +520,4 @@ Vấn đề mở không chặn tiến độ: `preprocess.py` và các file mà [
 - **Đơn giản hóa toàn bộ backend** (~3.700 → ~950 dòng); chạy lại trên dữ liệu thật, ItemKNN và Popularity khớp kết quả cũ; BPR train local.
 - 17/10: tăng tốc profile (~6 s → ~0,3 s); thêm `genres`, `item_doc`; cài BM25, Dense, Fusion, kho review (9,25 triệu review), gói bằng chứng; chạy pha validation. Thử embedding xếp lại trong pool: không cải thiện (+0,03%). Đánh giá Dense trên test chuyển sang mẫu 50k (đánh giá toàn bộ ~90 phút, không ảnh hưởng quyết định nào). Kết quả test: Fusion 5,60% > ItemKNN 4,91% > BM25 1,35% > BPR 1,31% > Dense 1,16% (50k) > Popularity 0,91% NDCG@10; fusion +14% NDCG, +19% Recall@50 so với ItemKNN. Embedding bge-small quá chậm trên CPU này → đổi sang MiniLM-L6 (66 phút cho cả catalog). BM25 giới hạn 50 từ truy vấn (nhanh hơn 5 lần). Fusion RRF không vượt ItemKNN → thêm fusion theo điểm + prior popularity (+15% NDCG). Kết quả validation: ItemKNN 5,86% ≫ BM25 1,65% > Dense 1,40% > Popularity 1,11% NDCG@10.
 - 17/10 (tiếp): chạy gợi ý cho 5 query test → phát hiện một phim có nhiều phiên bản làm hệ thống gợi ý lại phim đã xem (Cast Away 3 bản) và làm metric tính trượt khi gợi ý đúng phim khác bản. Thêm `backend/data/editions.py` (gom theo title/người + số lượt rating lệch ≤ 2%, chặn gộp dây chuyền, "Various", bộ sưu tập), `fuse --editions`, `evaluate --editions` (metric cùng phim), mượn title cho phim Prime trong bằng chứng; lọc review nói về sách, sửa cắt tên viết tắt, bỏ "Various". Kết quả mẫu 50k test (cùng phim): fusion 6,31% → 6,43% NDCG@10, 16,2% → 16,6% Recall@50; metric đúng mã đánh giá thấp ~12%. Phát hiện user ví dụ xem Harry Potter **2** (không phải 1) trước target. 49 test.
+- 18/10: phân tích theo nhóm (`backend/cf/segments.py`). Cài phần LLM với Gemini (`backend/generation/`: client có cache và JSON schema, giải thích tự do / bắt buộc trích dẫn, validator, giám khảo, thí nghiệm) và demo `backend/service.py`; API key ở `.env` (git-ignore). Smoke test validation tìm và sửa 4 lỗi (thinking làm cắt JSON, sai schema, mã trong câu, validator bắt nhầm tên phim). Thử 3 cách xếp lại pool top 20 (LLM, learning-to-rank, cross-encoder) — không cách nào vượt thứ tự fusion → **bỏ bước xếp lại khỏi đề tài**, xóa mã, giữ số liệu. Smoke test 10 record trên test với báo cáo `docs/smoke_test_10_record.md`: bắt buộc trích dẫn 88% câu đúng nguồn so với 72% khi tự do; tìm ra và sửa lỗi gom phiên bản (Twilight). Chạy lại đánh giá 50k với `editions.parquet` mới: hệ thống cuối 6,46% NDCG@10 cùng phim. 66 test.

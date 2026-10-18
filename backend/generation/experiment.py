@@ -1,19 +1,22 @@
-"""Runs F (LLM re-ranking) and G (explanations with / without citations) on a fixed user sample.
+"""Run G: explanations of the fusion top 3, with and without citations, on a fixed user sample.
 
-    python -m backend.generation.experiment --phase test --sample 200 --in-pool 200 --output-dir runs/llm/test-200
+    python -m backend.generation.experiment --phase test --sample 200 --output-dir runs/llm/test-200
+    python -m backend.generation.experiment --phase test --sample 5 --with-target 5 --output-dir runs/llm/smoke-10 \
+        --report docs/smoke_test_10_record.md
 
-Steps, each saved in --output-dir (a re-run reuses them; every LLM call is cached in llm_cache.jsonl):
-1. packages.jsonl  for each sampled query: fusion top 50 (for metrics), the re-rank pool (top 20)
-                   and the evidence package of the pool ([H#] history, [E#] item evidence);
-2. rerank.jsonl    F: LLM top 10 from the pool with evidence cards; F0: the same from titles only;
-3. explain.jsonl   G: explanations of the F top 3, "free" and "cited"; every cited claim checked by the validator;
-4. judge.jsonl     judge labels (supported / partial / unsupported) for every free and cited claim;
-5. summary.json    all metrics; manual_check.csv: 40 judged claims to check by hand.
+The ranking is the fusion order (no re-ranking). Steps, saved in --output-dir (a re-run reuses them;
+every LLM call is cached in llm_cache.jsonl / judge_cache.jsonl):
+1. packages.jsonl  for each sampled query: profile summary, fusion top 10, evidence package of the top 10;
+2. explain.json    the LLM explains the top 3 twice: "free" (no ids) and "cited" ([E#]/[H#] required);
+                   every cited claim is checked by the validator;
+3. judge           a stronger LLM labels every claim supported / partial / unsupported;
+4. summary.json    ranking and explanation metrics; manual_check.csv: 40 judged claims to check by hand;
+   --report        a Markdown report with every step of every sampled query.
 
 Samples (docs/architecture.md, section 6):
-- main: `--sample` queries drawn with seed 42, never chosen by whether the retriever found the target;
-- in-pool: the first `--in-pool` queries of a 5,000-query draw whose target film is in the pool. Re-ranking
-  can only help when the target is in the pool, so F is also reported on this group, separately.
+- random:       `--sample` queries drawn with seed 42, never chosen by whether the system found the target;
+- with target:  the first `--with-target` queries of a 5,000-query draw whose target film is in the
+                fusion top 10 (to look at explanations of correct recommendations). Reported separately.
 """
 
 from __future__ import annotations
@@ -21,10 +24,10 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import sqlite3
 
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 from random import Random
 from typing import Any, Callable
@@ -35,89 +38,69 @@ from backend.cf.cli import load_model
 from backend.cf.evaluate import film_rank, load_queries, ranking_metrics
 from backend.data.editions import borrow_titles, load_editions
 from backend.data.io import write_json
-from backend.evidence.evidence import evidence_package
 from backend.generation.explain import llm_explain
 from backend.generation.judge import SCHEMA as JUDGE_SCHEMA, judge_prompt, parse_judge
 from backend.generation.llm import CHEAP_MODEL, JUDGE_MODEL, Gemini
-from backend.generation.rerank import llm_rerank
 from backend.generation.sources import item_name, item_sources
-from backend.generation.validator import claim_problems, max_similarity, sentence_encoder
-from backend.profile.profile import build_profile, load_catalog, load_history
+from backend.generation.validator import claim_problems, max_similarity, render, sentence_encoder
+from backend.profile.profile import load_catalog
+from backend.service import EXPLAINED, FUSION, TOP_K, build_package
 
 
 QUERIES = {"validation": "queries_val.parquet", "test": "queries_test.parquet"}
-FUSION = {"validation": "runs/validation/fusion-editions", "test": "runs/fusion-editions-movies-tv-2023/test"}
-POOL, TOP_K, EXPLAINED = 20, 10, 3
 ID_PROBLEMS = {"no_source", "unknown_evidence", "evidence_of_other_item", "unknown_history"}
 
 
 # ---------- 1. sample and evidence packages ----------
 
-def draw_queries(queries_path: Path, fusion: Any, editions: dict[str, str], sample: int, in_pool: int, seed: int) -> dict[str, Any]:
-    main = load_queries(queries_path, sample, seed)
-    if not in_pool:
-        return {"main": main, "in_pool": [], "scanned": 0, "pool_recall": None}
+def draw_queries(queries_path: Path, fusion: Any, editions: dict[str, str], sample: int, with_target: int, seed: int) -> dict[str, Any]:
+    random_queries = load_queries(queries_path, sample, seed)
+    drawn = {"random": random_queries, "with_target": [], "scanned": 0, "hit_rate_at_10": None}
+    if not with_target:
+        return drawn
 
     scan = load_queries(queries_path, 5_000, seed)
-    found = []
+    taken = {query["user_id"] for query in random_queries}
+    hits = []
 
     for start in range(0, len(scan), 256):
         batch = scan[start : start + 256]
-        pools = fusion.recommend_batch([query["user_id"] for query in batch], limit=POOL)
-        found += [q for q, items in zip(batch, pools) if film_rank([i["item_id"] for i in items], q["target_item_id"], editions)]
+        tops = fusion.recommend_batch([query["user_id"] for query in batch], limit=TOP_K)
+        hits += [q for q, items in zip(batch, tops) if film_rank([i["item_id"] for i in items], q["target_item_id"], editions)]
 
-    return {"main": main, "in_pool": found[:in_pool], "scanned": len(scan), "pool_recall": len(found) / len(scan)}
+    drawn.update(with_target=[q for q in hits if q["user_id"] not in taken][:with_target], scanned=len(scan), hit_rate_at_10=len(hits) / len(scan))
+
+    return drawn
 
 
-def build_packages(queries: list[dict[str, Any]], fusion: Any, artifacts: Path, phase: str, editions: dict[str, str], path: Path) -> dict[str, dict]:
-    """user_id -> {"query", "top50", "pool", "package"}; appended to `path` one by one, so a stopped run resumes."""
-    records = {}
+def build_packages(drawn: dict[str, Any], fusion: Any, artifacts: Path, phase: str, editions: dict[str, str], path: Path) -> list[dict]:
+    """One record per sampled query; appended to `path` one by one, so a stopped run resumes."""
+    done = {}
     if path.exists():
-        records = {r["query"]["user_id"]: r for r in map(json.loads, path.read_text(encoding="utf-8").splitlines())}
+        done = {r["query"]["user_id"]: r for r in map(json.loads, path.read_text(encoding="utf-8").splitlines())}
 
-    todo = [query for query in queries if query["user_id"] not in records]
-    connection = sqlite3.connect(artifacts / "reviews.sqlite")
-    catalog_path = artifacts / "catalog_enriched.parquet"
+    records = []
+    for group in ("random", "with_target"):
+        for query in drawn[group]:
+            if query["user_id"] not in done:
+                package, ranked, profile = build_package(query["user_id"], query["as_of"], phase, fusion, artifacts, editions)
+                summary = {"seen": len(profile["seen_item_ids"]), "positive": len(profile["positive_signals"]),
+                           "negative": len(profile["negative_signals"]), "without_metadata": len(profile["items_without_metadata"])}
 
-    for start in range(0, len(todo), 64):
-        batch = todo[start : start + 64]
-        tops = fusion.recommend_batch([query["user_id"] for query in batch], limit=50)
+                done[query["user_id"]] = {"query": query, "group": group, "profile": summary, "ranked": ranked, "package": package}
+                with path.open("a", encoding="utf-8") as file:
+                    file.write(json.dumps(done[query["user_id"]], ensure_ascii=False, default=float) + "\n")
 
-        for query, items in zip(batch, tops):
-            history = load_history(artifacts / "splits.parquet", query["user_id"], query["as_of"], phase)
-            history_catalog = load_catalog(catalog_path, {row["item_id"] for row in history})
-            borrow_titles(history_catalog, editions, catalog_path)
-            profile = build_profile(query["user_id"], query["as_of"], history, history_catalog)
-
-            top50 = [item["item_id"] for item in items]
-            pool_catalog = load_catalog(catalog_path, set(top50[:POOL]))
-            borrow_titles(pool_catalog, editions, catalog_path)
-
-            record = {"query": query, "top50": top50, "pool": top50[:POOL], "package": evidence_package(profile, top50[:POOL], pool_catalog, connection)}
-            records[query["user_id"]] = record
-
-            with path.open("a", encoding="utf-8") as file:
-                file.write(json.dumps(record, ensure_ascii=False, default=float) + "\n")
-
-        print(f"packages {len(records)}/{len(queries)}", flush=True)
+            records.append(done[query["user_id"]])
 
     return records
 
 
-# ---------- 2-4. LLM steps ----------
+# ---------- 2-3. explanations, validator, judge ----------
 
-def run_rerank(records: list[dict[str, Any]], llm: Gemini, workers: int) -> dict[str, dict]:
+def run_explain(records: list[dict[str, Any]], llm: Gemini, encode: Callable, workers: int) -> dict[str, dict]:
     def one(record):
-        package, pool = record["package"], record["pool"]
-        return record["query"]["user_id"], {"F": llm_rerank(llm, package, pool, TOP_K, True), "F0": llm_rerank(llm, package, pool, TOP_K, False)}
-
-    with ThreadPoolExecutor(workers) as pool:
-        return dict(pool.map(one, records))
-
-
-def run_explain(records: list[dict[str, Any]], reranks: dict[str, dict], llm: Gemini, encode: Callable, workers: int) -> dict[str, dict]:
-    def one(record):
-        top = reranks[record["query"]["user_id"]]["F"]["ranking"][:EXPLAINED]
+        top = record["package"]["candidates"][:EXPLAINED]
         return record["query"]["user_id"], {"items": top, "free": llm_explain(llm, record["package"], top, cited=False),
                                             "cited": llm_explain(llm, record["package"], top, cited=True)}
 
@@ -138,8 +121,7 @@ def run_explain(records: list[dict[str, Any]], reranks: dict[str, dict], llm: Ge
 
 def run_judge(records: list[dict[str, Any]], explains: dict[str, dict], judge: Gemini, workers: int) -> dict[str, dict]:
     def one(record):
-        user = record["query"]["user_id"]
-        usage = {}
+        user, usage = record["query"]["user_id"], {}
 
         for mode in ("free", "cited"):
             explained = explains[user][mode]["items"]
@@ -159,59 +141,37 @@ def run_judge(records: list[dict[str, Any]], explains: dict[str, dict], judge: G
         return dict(pool.map(one, records))
 
 
-# ---------- 5. metrics ----------
+# ---------- 4. metrics ----------
 
-def rerank_summary(records: list[dict[str, Any]], reranks: dict[str, dict], editions: dict[str, str]) -> dict[str, Any]:
-    def ranks(lists):
-        return np.array([film_rank(items, r["query"]["target_item_id"], editions) for r, items in zip(records, lists)])
+def kept(claim: dict[str, Any], min_similarity: float) -> bool:
+    return not claim["problems"] and claim["similarity"] >= min_similarity
 
-    users = [r["query"]["user_id"] for r in records]
-    positive = np.array([(r["query"]["target_rating"] or 0) >= 4 for r in records], dtype=bool)
-    summary = {"users": len(records)}
 
-    for name, lists in [("fusion", [r["top50"] for r in records]),
-                        ("F", [reranks[u]["F"]["ranking"] for u in users]),
-                        ("F0", [reranks[u]["F0"]["ranking"] for u in users])]:
-        model_ranks = ranks(lists)
-        summary[name] = {**ranking_metrics(model_ranks), "positive_target": ranking_metrics(model_ranks[positive])}
+def ranking_summary(records: list[dict[str, Any]], editions: dict[str, str]) -> dict[str, Any]:
+    ranks = np.array([film_rank([i["item_id"] for i in r["ranked"]], r["query"]["target_item_id"], editions) for r in records])
+    metrics = ranking_metrics(ranks)
 
-    for name in ("F", "F0"):
-        summary[name]["status"] = dict(Counter(reranks[u][name]["status"] for u in users))
-        summary[name]["usage"] = usage_summary([reranks[u][name] for u in users])
-
-    summary["positive_target_users"] = int(positive.sum())
-
-    return summary
+    return {"users": len(records), "ndcg_at_10": metrics["ndcg_at_10"], "hr_at_10": metrics["hr_at_10"]}
 
 
 def explain_summary(explains: dict[str, dict], judges: dict[str, dict], min_similarity: float) -> dict[str, Any]:
     users = list(explains)
-    requested = sum(len(explains[u]["items"]) for u in users)
-    summary: dict[str, Any] = {"users": len(users), "items_requested": requested}
+    summary: dict[str, Any] = {"users": len(users), "items_requested": sum(len(explains[u]["items"]) for u in users)}
 
     free = [c for u in users for claims in explains[u]["free"]["items"].values() for c in claims]
     cited = [c for u in users for claims in explains[u]["cited"]["items"].values() for c in claims]
 
-    def kept(claim, threshold):
-        return not claim["problems"] and claim["similarity"] >= threshold
-
     def covered(mode, threshold=None):
-        return sum(1 for u in users for claims in explains[u][mode]["items"].values()
-                   if any(threshold is None or kept(c, threshold) for c in claims))
+        return sum(1 for u in users for claims in explains[u][mode]["items"].values() if any(threshold is None or kept(c, threshold) for c in claims))
 
     summary["free"] = {**label_summary(free), "items_explained": covered("free")}
     summary["cited_raw"] = {**label_summary(cited), "items_explained": covered("cited")}
-    summary["cited_validated"] = {**label_summary([c for c in cited if kept(c, min_similarity)]), "items_explained": covered("cited", min_similarity)}
-    summary["cited_validated"]["min_similarity"] = min_similarity
-
-    ids = [(eid, c) for c in cited for eid in c["evidence_ids"] + c["history_ids"]]
-    summary["citations"] = {"total": len(ids), "claims_with_id_problems": sum(1 for c in cited if ID_PROBLEMS & set(c["problems"]))}
-    summary["problems"] = dict(Counter(p for c in cited for p in c["problems"]))
+    summary["cited_validated"] = {**label_summary([c for c in cited if kept(c, min_similarity)]), "items_explained": covered("cited", min_similarity),
+                                  "min_similarity": min_similarity}
     summary["removed_by_validator"] = label_summary([c for c in cited if not kept(c, min_similarity)])
-
+    summary["problems"] = dict(Counter(p for c in cited for p in c["problems"]))
     summary["similarity_thresholds"] = {
-        str(t): {**label_summary([c for c in cited if kept(c, t)]), "items_explained": covered("cited", t)}
-        for t in (0.0, 0.2, 0.3, 0.4, 0.5)
+        str(t): {**label_summary([c for c in cited if kept(c, t)]), "items_explained": covered("cited", t)} for t in (0.0, 0.2, 0.3, 0.4, 0.5)
     }
     summary["generation_failed"] = {mode: sum(1 for u in users if explains[u][mode]["status"] != "ok") for mode in ("free", "cited")}
     summary["usage"] = {mode: usage_summary([explains[u][mode] for u in users]) for mode in ("free", "cited")}
@@ -246,81 +206,216 @@ def usage_summary(calls: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def manual_check(records: dict[str, dict], explains: dict[str, dict], path: Path, count: int = 40, seed: int = 42) -> None:
+def manual_check(records: list[dict], explains: dict[str, dict], path: Path, count: int = 40, seed: int = 42) -> None:
     """A fixed random set of judged claims, with their sources, for a person to label."""
     rows = []
+    packages = {r["query"]["user_id"]: r["package"] for r in records}
 
     for user, explained in explains.items():
-        package = records[user]["package"]
-
         for mode in ("free", "cited"):
             for item_id, claims in explained[mode]["items"].items():
                 for claim in claims:
-                    sources = [f"[{eid}] {entry['text']}" for eid, entry in item_sources(package, item_id)]
-                    rows.append({"mode": mode, "item": item_name(package, item_id), "claim": claim["text"],
-                                 "cited": " ".join(claim["evidence_ids"] + claim["history_ids"]),
-                                 "problems": " ".join(claim.get("problems", [])), "judge_label": claim.get("label", "unlabeled"),
-                                 "manual_label": "", "sources": " || ".join(sources)})
+                    sources = [f"[{eid}] {entry['text']}" for eid, entry in item_sources(packages[user], item_id)]
+                    rows.append({"mode": mode, "item": item_name(packages[user], item_id), "claim": claim["text"],
+                                 "cited": " ".join(claim["evidence_ids"] + claim["history_ids"]), "problems": " ".join(claim.get("problems", [])),
+                                 "judge_label": claim.get("label", "unlabeled"), "manual_label": "", "sources": " || ".join(sources)})
 
-    picked = Random(seed).sample(rows, min(count, len(rows)))
     with path.open("w", encoding="utf-8-sig", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=list(rows[0]) if rows else ["claim"])
+        writer = csv.DictWriter(file, fieldnames=["mode", "item", "claim", "cited", "problems", "judge_label", "manual_label", "sources"])
         writer.writeheader()
-        writer.writerows(picked)
+        writer.writerows(Random(seed).sample(rows, min(count, len(rows))))
+
+
+# ---------- report ----------
+
+def day(ms: int) -> str:
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+
+
+def pct(value: float | None) -> str:
+    return "—" if value is None else f"{100 * value:.1f}%".replace(".", ",")
+
+
+def write_report(path: Path, args: Any, drawn: dict, records: list[dict], explains: dict, summary: dict, fusion: Any, editions: dict[str, str]) -> None:
+    """Every step of every sampled query, then the overall numbers (Vietnamese, for the course report)."""
+    lines = [
+        f"# Smoke test {len(records)} record — hệ thống cuối (fusion + bằng chứng + giải thích có trích dẫn)",
+        "",
+        f"Sinh tự động bởi `python -m backend.generation.experiment` ({datetime.now().strftime('%Y-%m-%d %H:%M')}). "
+        "Phần \"Đánh giá tổng quan\" ở cuối do người chạy viết.",
+        "",
+        "## 1. Dữ liệu và cấu hình",
+        "",
+        "| Thành phần | Giá trị |",
+        "|---|---|",
+        f"| Pha | `{args.phase}`: model fit trên train" + (" + validation; target là tương tác cuối của user (test)" if args.phase == "test" else "; target là tương tác validation") + " |",
+        f"| Query | `{args.artifacts_dir / QUERIES[args.phase]}` — mỗi user một target, `as_of` = thời điểm target |",
+        f"| Mẫu | {len(drawn['random'])} query ngẫu nhiên (`Random({args.seed})`) + {len(drawn['with_target'])} query có target trong top 10 "
+        f"(lấy đầu tiên trong {drawn['scanned']} query ngẫu nhiên; tỉ lệ có target trong top 10 của lượt quét: {pct(drawn['hit_rate_at_10'])}) |",
+        f"| Lịch sử, hồ sơ | `splits.parquet`, chỉ tương tác trước `as_of`; catalog `catalog_enriched.parquet`; phiên bản `editions.parquet` |",
+        f"| Xếp hạng | Fusion `{args.model_dir or FUSION[args.phase]}`: trọng số " + ", ".join(f"{k} {v:g}" for k, v in fusion.config["weights"].items())
+        + f", method {fusion.config['method']}, depth {fusion.config['depth']}, gom phiên bản; giữ nguyên thứ tự fusion (không xếp lại) |",
+        "| Bằng chứng | Metadata catalog + tối đa 2 review của người khác viết trước `as_of` (`reviews.sqlite`) cho mỗi phim top 10 |",
+        f"| LLM giải thích | `{args.model}`, temperature 0, JSON schema; top {EXPLAINED}, tối đa 2 câu/phim; 2 chế độ: tự do và bắt buộc trích dẫn |",
+        f"| Validator | ID nguồn tồn tại và đúng phim, H# thuộc hồ sơ, tên người/tựa trong câu có trong nguồn, độ giống MiniLM ≥ {args.min_similarity:g} |",
+        f"| Giám khảo | `{args.judge_model}` (thinking low), chấm từng câu: supported / partial / unsupported so với nguồn của phim và lịch sử |",
+        "",
+        "## 2. Chi tiết từng record",
+        "",
+    ]
+    names = target_names(records, args.artifacts_dir / "catalog_enriched.parquet", editions)
+
+    for n, record in enumerate(records, 1):
+        query, package, profile = record["query"], record["package"], record["profile"]
+        user = query["user_id"]
+        top_ids = [item["item_id"] for item in record["ranked"]]
+        rank = film_rank(top_ids, query["target_item_id"], editions)
+        explained = explains[user]
+        group = "ngẫu nhiên" if record["group"] == "random" else "có target trong top 10"
+
+        lines += [
+            f"### Record {n} ({group}) — user `{user}`",
+            "",
+            f"- **Query:** `as_of` = {query['as_of']} ({day(query['as_of'])}); target `{query['target_item_id']}` "
+            f"— *{names[query['target_item_id']]}*, rating {query['target_rating']:.0f}★.",
+            f"- **Kết quả:** target " + (f"**ở hạng {rank}** (tính theo cùng phim)" if rank else "không có trong top 10") + ".",
+            "",
+            f"**Bước 1 — Hồ sơ.** {profile['seen']} phim đã xem trước `as_of`; {profile['positive']} phim thích (≥ 4★), "
+            f"{profile['negative']} phim không thích (≤ 2★); {profile['without_metadata']} phim không có metadata. Bằng chứng lịch sử đưa cho LLM:",
+            "",
+        ]
+        for hid, entry in list(package["history"].items())[:6]:
+            own = f' — review của user: "{short(entry["own_review"], 20)}"' if entry.get("own_review") else ""
+            lines.append(f"- [{hid}] {entry['rating']:.0f}★ {short(entry['text'], 14)}{own}")
+        if len(package["history"]) > 6:
+            lines.append(f"- … và {len(package['history']) - 6} mục khác")
+
+        lines += ["", "**Bước 2 — Fusion top 10** (nhánh tìm ra phim, điểm fusion):", "", "| Hạng | Phim | Nhánh | Điểm |", "|---:|---|---|---:|"]
+        for k, item in enumerate(record["ranked"], 1):
+            mark = " ✅ target" if film_rank([item["item_id"]], query["target_item_id"], editions) else ""
+            lines.append(f"| {k} | {short(item_name(package, item['item_id']), 12)}{mark} | {'+'.join(item.get('members', [item['source']]))} | {item['score']:.3f} |")
+
+        evidence_counts = Counter(entry["source_type"] for entry in package["evidence"].values())
+        lines += ["", f"**Bước 3 — Bằng chứng.** {len(package['evidence'])} mục cho top 10 ({evidence_counts['metadata']} metadata, "
+                      f"{evidence_counts['review']} review). Của top {EXPLAINED}:", ""]
+        for item_id in explained["items"]:
+            lines.append(f"- *{short(item_name(package, item_id), 12)}*: " + "; ".join(
+                f"[{eid}] {short(entry['text'], 12)}" for eid, entry in item_sources(package, item_id)))
+
+        usage = explained["cited"]
+        lines += ["", f"**Bước 4 — LLM giải thích có trích dẫn** ({usage['input_tokens']} token vào, {usage['output_tokens']} token ra"
+                      f"{', cache' if usage['cache_hit'] else ''}; trạng thái {usage['status']}) và **bước 5 — validator, giám khảo**:", "",
+                  "| Phim | Câu LLM viết | Nguồn | Validator | Độ giống | Giám khảo |", "|---|---|---|---|---:|---|"]
+        for item_id, claims in explained["cited"]["items"].items():
+            for claim in claims or [{"text": "(không có câu nào)", "evidence_ids": [], "history_ids": [], "problems": [], "similarity": 0.0}]:
+                verdict = "giữ" if claim.get("text") != "(không có câu nào)" and kept(claim, args.min_similarity) else (
+                    ", ".join(claim["problems"]) or ("độ giống thấp" if claim.get("text") != "(không có câu nào)" else "—"))
+                lines.append(f"| {short(item_name(package, item_id), 6)} | {claim['text']} | {' '.join(claim['evidence_ids'] + claim['history_ids'])} | "
+                             f"{verdict} | {claim['similarity']:.2f} | {claim.get('label', '—')} |")
+
+        lines += ["", "**Lời giải thích hiển thị cho user** (chỉ các câu validator giữ lại):", ""]
+        for item_id, claims in explained["cited"]["items"].items():
+            valid = [c for c in claims if kept(c, args.min_similarity)]
+            lines.append(f"- *{short(item_name(package, item_id), 12)}*: " + (render(valid) if valid else "(không có giải thích — evidence_unavailable)"))
+
+        lines += ["", "**Đối chứng — giải thích tự do** (không bắt buộc trích dẫn, cùng thông tin):", ""]
+        for item_id, claims in explained["free"]["items"].items():
+            lines.append(f"- *{short(item_name(package, item_id), 12)}*: " + " ".join(f"{c['text']} *({c.get('label', '—')})*" for c in claims))
+        lines.append("")
+
+    lines += overall_section(summary)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def overall_section(summary: dict) -> list[str]:
+    g = summary["G"]
+    lines = ["## 3. Số liệu tổng hợp", "", "| Nhóm | Số user | NDCG@10 | HR@10 |", "|---|---:|---:|---:|"]
+    for group, values in summary["ranking"].items():
+        lines.append(f"| {group} | {values['users']} | {pct(values['ndcg_at_10'])} | {pct(values['hr_at_10'])} |")
+
+    lines += ["", f"Giải thích ({g['items_requested']} phim cần giải thích):", "",
+              "| Cấu hình | Số câu | Phim có giải thích | supported | partial | unsupported |", "|---|---:|---:|---:|---:|---:|"]
+    for name, label in (("free", "Tự do"), ("cited_raw", "Bắt buộc trích dẫn, trước validator"), ("cited_validated", "Bắt buộc trích dẫn, sau validator")):
+        values = g[name]
+        labels = values["labels"]
+        lines.append(f"| {label} | {values['claims']} | {values['items_explained']} | {labels.get('supported', 0)} | {labels.get('partial', 0)} | {labels.get('unsupported', 0)} |")
+
+    removed = g["removed_by_validator"]
+    lines += ["", f"- Validator loại {removed['claims']} câu: nhãn giám khảo {removed['labels']}; lý do: {g['problems'] or 'chỉ độ giống thấp'}.",
+              "- Theo ngưỡng độ giống: " + "; ".join(f"{t}: {v['claims']} câu, supported {pct(v['supported_rate'])}" for t, v in g["similarity_thresholds"].items()) + ".",
+              f"- Lỗi sinh: {g['generation_failed']}.",
+              f"- Token: giải thích có trích dẫn {g['usage']['cited']['input_tokens']} vào / {g['usage']['cited']['output_tokens']} ra; "
+              f"tự do {g['usage']['free']['input_tokens']} / {g['usage']['free']['output_tokens']}; giám khảo {g['judge_usage']['input_tokens']} / {g['judge_usage']['output_tokens']}.",
+              f"- Độ trễ một lời gọi giải thích có trích dẫn (không tính cache): p50 {fmt_ms(g['usage']['cited']['latency_ms_p50'])}, p95 {fmt_ms(g['usage']['cited']['latency_ms_p95'])}.",
+              "", "## 4. Đánh giá tổng quan", "", "(viết sau khi đọc kết quả)", ""]
+
+    return lines
+
+
+def fmt_ms(value: float | None) -> str:
+    return "—" if value is None else f"{value / 1000:.1f} s".replace(".", ",")
+
+
+def short(text: str, words: int) -> str:
+    parts = (text or "").replace("|", "/").split()
+    return " ".join(parts[:words]) + (" …" if len(parts) > words else "")
+
+
+def target_names(records: list[dict], catalog_path: Path, editions: dict[str, str]) -> dict[str, str]:
+    """Title of every target (borrowed from another edition if needed), else the start of its item_doc."""
+    targets = {r["query"]["target_item_id"] for r in records}
+    rows = load_catalog(catalog_path, targets)
+    borrow_titles(rows, editions, catalog_path)
+
+    return {t: short(rows.get(t, {}).get("title") or rows.get(t, {}).get("item_doc") or "(không có metadata)", 12) for t in targets}
 
 
 # ---------- CLI ----------
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m backend.generation.experiment")
+    parser = argparse.ArgumentParser(prog="recsys-llm")
     parser.add_argument("--phase", choices=["validation", "test"], required=True)
     parser.add_argument("--artifacts-dir", type=Path, default=Path("artifacts/movies-tv-2023"))
     parser.add_argument("--model-dir", type=Path, help="fusion with editions (default: the one of the phase)")
-    parser.add_argument("--sample", type=int, default=200)
-    parser.add_argument("--in-pool", type=int, default=0)
+    parser.add_argument("--sample", type=int, default=200, help="random queries")
+    parser.add_argument("--with-target", type=int, default=0, help="extra queries whose target is in the fusion top 10")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--model", default=CHEAP_MODEL)
     parser.add_argument("--judge-model", default=JUDGE_MODEL)
     parser.add_argument("--min-similarity", type=float, default=0.3)
     parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument("--steps", default="packages,rerank,explain,judge", help="stop early, e.g. 'packages'")
+    parser.add_argument("--report", type=Path, help="also write a Markdown report of every step of every query")
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args(argv)
 
-    out, steps = args.output_dir, set(args.steps.split(","))
+    out = args.output_dir
     out.mkdir(parents=True, exist_ok=True)
     editions = load_editions(args.artifacts_dir / "editions.parquet")
     fusion = load_model(args.model_dir or Path(FUSION[args.phase]))
 
-    drawn = draw_queries(args.artifacts_dir / QUERIES[args.phase], fusion, editions, args.sample, args.in_pool, args.seed)
-    records = build_packages(drawn["main"] + drawn["in_pool"], fusion, args.artifacts_dir, args.phase, editions, out / "packages.jsonl")
-    main_records = [records[q["user_id"]] for q in drawn["main"]]
-    pool_records = [records[q["user_id"]] for q in drawn["in_pool"]]
+    drawn = draw_queries(args.artifacts_dir / QUERIES[args.phase], fusion, editions, args.sample, args.with_target, args.seed)
+    records = build_packages(drawn, fusion, args.artifacts_dir, args.phase, editions, out / "packages.jsonl")
 
-    summary: dict[str, Any] = {"phase": args.phase, "model": args.model, "judge_model": args.judge_model,
-                               "sample": args.sample, "seed": args.seed, "pool_recall_at_20_of_5000": drawn["pool_recall"]}
+    explains = run_explain(records, Gemini(args.model, out / "llm_cache.jsonl"), sentence_encoder(), args.workers)
 
-    if "rerank" in steps:
-        llm = Gemini(args.model, out / "llm_cache.jsonl")
-        reranks = run_rerank(main_records + pool_records, llm, args.workers)
-        write_json(out / "rerank.json", reranks)
+    # The judge "thinks" a little before labelling: longer timeout and a large output budget.
+    judge = Gemini(args.judge_model, out / "judge_cache.jsonl", timeout=60.0, thinking_level="low")
+    judges = run_judge(records, explains, judge, args.workers)
+    write_json(out / "explain.json", explains)
 
-        summary["F_main"] = rerank_summary(main_records, reranks, editions)
-        if pool_records:
-            summary["F_in_pool"] = rerank_summary(pool_records, reranks, editions)
-
-        if "explain" in steps:
-            explains = run_explain(main_records, reranks, llm, sentence_encoder(), args.workers)
-
-            # The judge "thinks" a little before labelling: longer timeout and a large output budget.
-            judge = Gemini(args.judge_model, out / "judge_cache.jsonl", timeout=60.0, thinking_level="low")
-            judges = run_judge(main_records, explains, judge, args.workers) if "judge" in steps else {}
-
-            write_json(out / "explain.json", explains)
-            summary["G"] = explain_summary(explains, judges, args.min_similarity)
-            manual_check(records, explains, out / "manual_check.csv")
-
+    summary = {
+        "phase": args.phase, "model": args.model, "judge_model": args.judge_model, "seed": args.seed,
+        "hit_rate_at_10_of_scan": drawn["hit_rate_at_10"],
+        "ranking": {group: ranking_summary([r for r in records if r["group"] == group], editions) for group in ("random", "with_target")},
+        "G": explain_summary(explains, judges, args.min_similarity),
+    }
     write_json(out / "summary.json", summary)
+    manual_check(records, explains, out / "manual_check.csv")
+
+    if args.report:
+        write_report(args.report, args, drawn, records, explains, summary, fusion, editions)
+
     print(json.dumps(summary, indent=2))
 
     return 0

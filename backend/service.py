@@ -1,10 +1,11 @@
-"""End-to-end recommendation for one user (the demo), following docs/architecture.md Q1-Q7.
+"""End-to-end recommendation for one user (the demo), following docs/architecture.md.
 
     python -m backend.service --user-id AGXVBIUFLFGMVLATYXHJYL4A5Q7Q --as-of 1530556520803 --phase test
 
-profile (Q1) -> fusion with editions, pool of 20 (Q2-Q3) -> evidence package (Q4)
--> LLM re-rank to 10 (Q5) -> LLM explains the top 3 with citations (Q6) -> validator keeps the
-claims it can check and renders them with their source ids (Q7).
+profile -> fusion with editions: the top 10 in fusion order (no re-ranking: an LLM, a cross-encoder
+and a learning-to-rank model were all tried and none beat the fusion order, see CLAUDE.md)
+-> evidence package of the top 10 -> the LLM explains the top 3 with citations -> the validator
+keeps the claims it can check and renders them with their source ids.
 
 A user without any rated item gets the fusion / popularity list and no LLM call ("cold_start").
 """
@@ -24,14 +25,59 @@ from backend.data.editions import borrow_titles, load_editions
 from backend.evidence.evidence import evidence_package
 from backend.generation.explain import llm_explain
 from backend.generation.llm import CHEAP_MODEL, Gemini
-from backend.generation.rerank import llm_rerank
 from backend.generation.sources import item_name
 from backend.generation.validator import claim_problems, render, sentence_encoder
 from backend.profile.profile import build_profile, load_catalog, load_history
 
 
 FUSION = {"validation": "runs/validation/fusion-editions", "test": "runs/fusion-editions-movies-tv-2023/test"}
-POOL, TOP_K, EXPLAINED = 20, 10, 3
+TOP_K, EXPLAINED = 10, 3
+
+
+def build_package(user_id: str, as_of: int, phase: str, fusion: Any, artifacts: Path, editions: dict[str, str]) -> tuple[dict, list[dict], dict]:
+    """(evidence package, fusion top 10, profile); untitled items borrow another edition's title."""
+    catalog_path = artifacts / "catalog_enriched.parquet"
+
+    history = load_history(artifacts / "splits.parquet", user_id, as_of, phase)
+    history_catalog = load_catalog(catalog_path, {row["item_id"] for row in history})
+    borrow_titles(history_catalog, editions, catalog_path)
+    profile = build_profile(user_id, as_of, history, history_catalog)
+
+    ranked = fusion.recommend(user_id, TOP_K, tuple(profile["seen_item_ids"]))
+    top = [item["item_id"] for item in ranked]
+    top_catalog = load_catalog(catalog_path, set(top))
+    borrow_titles(top_catalog, editions, catalog_path)
+
+    return evidence_package(profile, top, top_catalog, sqlite3.connect(artifacts / "reviews.sqlite")), ranked, profile
+
+
+def explain_top(package: dict[str, Any], llm: Any, encode: Callable | None = None, min_similarity: float = 0.3) -> tuple[list[dict], dict]:
+    """Recommendation entries (top 3 explained) and the LLM call's usage."""
+    top = package["candidates"]
+    explanation = llm_explain(llm, package, top[:EXPLAINED], cited=True)
+    explained = explanation["items"] if explanation["status"] == "ok" else None
+
+    entries = []
+    for rank, item_id in enumerate(top, 1):
+        entry = {"rank": rank, "item_id": item_id, "title": item_name(package, item_id), "explanation": None,
+                 "explanation_status": "not_requested", "evidence_ids": [], "history_ids": []}
+
+        if rank <= EXPLAINED:
+            if explained is None:
+                entry["explanation_status"] = "generation_failed"
+            else:
+                # Keep only the claims the validator accepts; citations come from the checked ids.
+                valid = [c for c in explained.get(item_id, []) if not claim_problems(c, item_id, package, encode, min_similarity)]
+                entry["explanation"] = render(valid) or None
+                entry["explanation_status"] = "citations_valid" if valid else "evidence_unavailable"
+                entry["evidence_ids"] = sorted({i for c in valid for i in c["evidence_ids"]}, key=lambda i: int(i[1:]))
+                entry["history_ids"] = sorted({i for c in valid for i in c["history_ids"]}, key=lambda i: int(i[1:]))
+
+        entries.append(entry)
+
+    usage = {"stage": "explain", **{k: explanation[k] for k in ("input_tokens", "output_tokens", "latency_ms", "cache_hit", "error")}}
+
+    return entries, usage
 
 
 def recommend(
@@ -46,52 +92,21 @@ def recommend(
     min_similarity: float = 0.3,
 ) -> dict[str, Any]:
     started = time.perf_counter()
-    catalog_path = artifacts / "catalog_enriched.parquet"
-
-    # Q1 profile (untitled items borrow the title of another edition).
-    history = load_history(artifacts / "splits.parquet", user_id, as_of, phase)
-    history_catalog = load_catalog(catalog_path, {row["item_id"] for row in history})
-    borrow_titles(history_catalog, editions, catalog_path)
-    profile = build_profile(user_id, as_of, history, history_catalog)
-
-    # Q2-Q4 pool and evidence.
-    pool = [item["item_id"] for item in fusion.recommend(user_id, POOL, tuple(profile["seen_item_ids"]))]
-    pool_catalog = load_catalog(catalog_path, set(pool))
-    borrow_titles(pool_catalog, editions, catalog_path)
-    package = evidence_package(profile, pool, pool_catalog, sqlite3.connect(artifacts / "reviews.sqlite"))
-
+    package, ranked, _ = build_package(user_id, as_of, phase, fusion, artifacts, editions)
     trace: dict[str, Any] = {"model": getattr(llm, "model", None), "retrieval_ms": (time.perf_counter() - started) * 1000.0, "llm_calls": []}
 
-    if not profile["positive_signals"] and not profile["negative_signals"]:
-        ranking, rerank_status, explained = pool[:TOP_K], "skipped", {}
+    if not package["history"]:
+        status = "cold_start"
+        recommendations = [{"rank": rank, "item_id": item_id, "title": item_name(package, item_id), "explanation": None,
+                            "explanation_status": "not_requested", "evidence_ids": [], "history_ids": []}
+                           for rank, item_id in enumerate(package["candidates"], 1)]
     else:
-        # Q5 re-rank, Q6 explain.
-        reranked = llm_rerank(llm, package, pool, TOP_K)
-        ranking, rerank_status = reranked["ranking"], reranked["status"]
+        status = "ok"
+        recommendations, usage = explain_top(package, llm, encode, min_similarity)
+        trace["llm_calls"].append(usage)
 
-        explanation = llm_explain(llm, package, ranking[:EXPLAINED], cited=True)
-        explained = explanation["items"] if explanation["status"] == "ok" else None
-
-        for stage, call in (("rerank", reranked), ("explain", explanation)):
-            trace["llm_calls"].append({"stage": stage, **{k: call[k] for k in ("input_tokens", "output_tokens", "latency_ms", "cache_hit", "error")}})
-
-    recommendations = []
-    for rank, item_id in enumerate(ranking, 1):
-        entry = {"rank": rank, "item_id": item_id, "title": item_name(package, item_id), "explanation": None,
-                 "explanation_status": "not_requested", "evidence_ids": [], "history_ids": []}
-
-        if rank <= EXPLAINED and rerank_status != "skipped":
-            if explained is None:
-                entry["explanation_status"] = "generation_failed"
-            else:
-                # Q7: keep only claims the validator accepts; render citations from the checked ids.
-                valid = [c for c in explained.get(item_id, []) if not claim_problems(c, item_id, package, encode, min_similarity)]
-                entry["explanation"] = render(valid) or None
-                entry["explanation_status"] = "citations_valid" if valid else "evidence_unavailable"
-                entry["evidence_ids"] = sorted({i for c in valid for i in c["evidence_ids"]}, key=lambda i: int(i[1:]))
-                entry["history_ids"] = sorted({i for c in valid for i in c["history_ids"]}, key=lambda i: int(i[1:]))
-
-        recommendations.append(entry)
+    for entry, item in zip(recommendations, ranked):
+        entry["fusion_score"], entry["found_by"] = item["score"], item.get("members", [item["source"]])
 
     cited_e = {i for r in recommendations for i in r["evidence_ids"]}
     cited_h = {i for r in recommendations for i in r["history_ids"]}
@@ -100,8 +115,7 @@ def recommend(
     return {
         "user_id": user_id,
         "as_of": as_of,
-        "status": "cold_start" if rerank_status == "skipped" else "ok",
-        "rerank_status": rerank_status,
+        "status": status,
         "recommendations": recommendations,
         "evidence": {eid: package["evidence"][eid] for eid in package["evidence"] if eid in cited_e},
         "history_sources": {hid: package["history"][hid] for hid in package["history"] if hid in cited_h},
@@ -110,10 +124,10 @@ def recommend(
 
 
 def print_result(result: dict[str, Any]) -> None:
-    print(f"User {result['user_id']} at {result['as_of']} - rerank: {result['rerank_status']}")
+    print(f"User {result['user_id']} at {result['as_of']} - {result['status']}")
 
     for entry in result["recommendations"]:
-        print(f"{entry['rank']:2d}. {entry['title']}")
+        print(f"{entry['rank']:2d}. {entry['title']}  [{'+'.join(entry['found_by'])}]")
         if entry["explanation"]:
             print(f"    {entry['explanation']}")
         elif entry["explanation_status"] != "not_requested":
@@ -127,7 +141,7 @@ def print_result(result: dict[str, Any]) -> None:
 
     calls = result["trace"]["llm_calls"]
     tokens = sum((c["input_tokens"] or 0) + (c["output_tokens"] or 0) for c in calls)
-    print(f"\n{len(calls)} LLM calls, {tokens} tokens, {result['trace']['total_ms'] / 1000:.1f} s")
+    print(f"\n{len(calls)} LLM call(s), {tokens} tokens, {result['trace']['total_ms'] / 1000:.1f} s")
 
 
 def main(argv: list[str] | None = None) -> int:

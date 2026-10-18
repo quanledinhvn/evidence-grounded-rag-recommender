@@ -41,28 +41,29 @@ def setup(tmp_path):
     return fusion
 
 
-def test_recommend_reranks_explains_and_keeps_only_valid_claims(tmp_path):
+def test_recommend_keeps_fusion_order_and_only_valid_claims(tmp_path):
     fusion = setup(tmp_path)
+
+    # Fusion order for u1 is i5, i2, i3, i6; E1 is the cast of i2 (C2 in the explanation prompt).
     explanation = {"items": [
-        {"item_id": "C1", "claims": [{"text": "It has the same kind of cast", "evidence_ids": ["E1"], "history_ids": []}]},
-        {"item_id": "C2", "claims": [{"text": "Invented source", "evidence_ids": ["E999"], "history_ids": []}]},
+        {"item_id": "C1", "claims": [{"text": "Invented source", "evidence_ids": ["E999"], "history_ids": []}]},
+        {"item_id": "C2", "claims": [{"text": "It has the same kind of cast", "evidence_ids": ["E1"], "history_ids": []}]},
     ]}
-    # Pool (fusion order) is i5, i2, i3, i6; E1 is the cast of i2, so the LLM puts C2 (= i2) first.
-    llm = FakeLLM('{"item_ids": ["C2", "C1"]}', json.dumps(explanation))
+    result = recommend("u1", 100, "validation", fusion, tmp_path, {}, FakeLLM(json.dumps(explanation)))
+    first, second, third = result["recommendations"][:3]
 
-    result = recommend("u1", 100, "validation", fusion, tmp_path, {}, llm)
-    first, second = result["recommendations"][:2]
-
-    assert result["status"] == "ok" and result["rerank_status"] == "llm_completed"
-    assert first["explanation"] == "It has the same kind of cast [E1]." and first["explanation_status"] == "citations_valid"
-    assert second["explanation"] is None and second["explanation_status"] == "evidence_unavailable"
-    assert list(result["evidence"]) == ["E1"] and result["evidence"]["E1"]["item_id"] == first["item_id"]
-    assert [call["stage"] for call in result["trace"]["llm_calls"]] == ["rerank", "explain"]
+    assert [entry["item_id"] for entry in result["recommendations"]] == [item["item_id"] for item in fusion.recommend("u1", 10)]
+    assert result["status"] == "ok"
+    assert first["explanation"] is None and first["explanation_status"] == "evidence_unavailable"
+    assert second["explanation"] == "It has the same kind of cast [E1]." and second["explanation_status"] == "citations_valid"
+    assert third["explanation_status"] == "evidence_unavailable"                                 # the LLM gave no claim
+    assert list(result["evidence"]) == ["E1"] and result["evidence"]["E1"]["item_id"] == second["item_id"]
+    assert [call["stage"] for call in result["trace"]["llm_calls"]] == ["explain"]
     assert {"i1", "i4"}.isdisjoint(entry["item_id"] for entry in result["recommendations"])      # seen items
 
 
 def test_user_without_history_gets_no_llm_call(tmp_path):
     result = recommend("stranger", 100, "validation", setup(tmp_path), tmp_path, {}, FakeLLM())
 
-    assert result["status"] == "cold_start" and result["rerank_status"] == "skipped"
+    assert result["status"] == "cold_start"
     assert all(entry["explanation_status"] == "not_requested" for entry in result["recommendations"])

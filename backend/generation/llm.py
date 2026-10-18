@@ -6,7 +6,7 @@ output budget and prompt; the API key is never written anywhere.
 
 The API key is read from the GEMINI_API_KEY environment variable or from a local `.env`
 file (git-ignored). Only rate-limit / server errors are retried; a timeout or a bad answer
-returns `error` and the caller falls back (see rerank.py, explain.py).
+returns `error` and the caller reports it (see explain.py: "generation_failed").
 """
 
 from __future__ import annotations

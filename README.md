@@ -2,7 +2,7 @@
 
 Hệ gợi ý phim và chương trình truyền hình có giải thích dựa trên bằng chứng: hệ thống trả 10 gợi ý cho một người dùng và giải thích ba gợi ý đầu, mỗi lý do trích dẫn về metadata phim, review của người khác hoặc lịch sử của chính người dùng. Dữ liệu: Amazon Reviews 2023 – Movies & TV. Đồ án học phần Hệ gợi ý, Thạc sĩ Khoa học máy tính, HUST.
 
-**Trạng thái:** đã có pipeline dữ liệu, hồ sơ người dùng, các nhánh truy xuất (ItemKNN, BPR, BM25, embedding), fusion có gom phiên bản của cùng một phim, kho review và gói bằng chứng [H#]/[E#]. Bước LLM xếp lại và giải thích chưa làm. Chi tiết tiến độ và kết quả ở mục *Tiến độ* trong [CLAUDE.md](CLAUDE.md).
+**Trạng thái:** đã có toàn bộ luồng: dữ liệu, hồ sơ người dùng, các nhánh truy xuất (ItemKNN, BPR, BM25, embedding), fusion có gom phiên bản của cùng một phim (thứ tự fusion là thứ tự cuối: xếp lại bằng LLM, cross-encoder hay learning-to-rank đều không tốt hơn), kho review, gói bằng chứng [H#]/[E#], LLM (Gemini) giải thích top 3 bắt buộc trích dẫn, validator và LLM giám khảo. Smoke test 10 record: [docs/smoke_test_10_record.md](docs/smoke_test_10_record.md). Chi tiết tiến độ và kết quả ở mục *Tiến độ* trong [CLAUDE.md](CLAUDE.md).
 
 ## Đọc tài liệu theo thứ tự
 
@@ -26,6 +26,8 @@ backend/
   cf/          # ItemKNN (nhánh chính), BPR-MF, Popularity, đánh giá, CLI chung recsys-cf
   retrieval/   # BM25, embedding (Dense), fusion
   evidence/    # gói bằng chứng cho LLM (CLI recsys-evidence)
+  generation/  # Gemini: giải thích có trích dẫn, validator, giám khảo, thí nghiệm (CLI recsys-llm)
+  service.py   # luồng end-to-end cho một user (CLI recsys-demo)
 tests/         # pytest, dữ liệu giả rất nhỏ, không cần dữ liệu thật
 docs/          # tài liệu (xem bảng trên)
 dataset/       # dữ liệu gốc, không đưa lên Git
@@ -85,9 +87,15 @@ uv run recsys-evidence --model-dir runs/fusion-editions-movies-tv-2023/test \
   --splits artifacts/movies-tv-2023/splits.parquet --catalog artifacts/movies-tv-2023/catalog_enriched.parquet \
   --reviews artifacts/movies-tv-2023/reviews.sqlite --editions artifacts/movies-tv-2023/editions.parquet \
   --user-id <USER_ID> --as-of <AS_OF_MS> --phase test --candidates 3
+
+# 5. Gợi ý + giải thích có trích dẫn cho một user (cần GEMINI_API_KEY trong môi trường hoặc file .env, không commit)
+uv run recsys-demo --user-id <USER_ID> --as-of <AS_OF_MS> --phase test
+
+# 6. Smoke test / thí nghiệm giải thích, kèm báo cáo từng bước
+uv run recsys-llm --phase test --sample 5 --with-target 5 --output-dir runs/llm/smoke-10 --report docs/smoke_test_10_record.md
 ```
 
-Đầy đủ các bước (BM25, embedding, tune fusion, kho review) và ví dụ cụ thể: mục *Hướng dẫn chạy test* trong [CLAUDE.md](CLAUDE.md).
+Đầy đủ các bước (BM25, embedding, tune fusion, kho review, LLM) và ví dụ cụ thể: mục *Hướng dẫn chạy test* trong [CLAUDE.md](CLAUDE.md).
 
 Trên Windows, nếu `implicit` báo `DLL load failed ... filename too long`, hãy đặt virtualenv ở đường dẫn ngắn hoặc bật LongPaths.
 

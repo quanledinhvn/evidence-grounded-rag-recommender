@@ -83,3 +83,27 @@ def test_untitled_item_borrows_the_title_of_another_edition(tmp_path):
     assert candidates["a2"]["title"] == "Cast Away [DVD]"
     assert candidates["a2"]["title_source"] == "meta:a1:title"      # cite the edition the title came from
     assert candidates["b1"]["title"] == ""                          # no other edition: stays untitled
+
+
+def test_normalized_title_handles_articles_part_numbers_and_years():
+    expected = "the twilight saga breaking dawn part 1"
+
+    assert normalized_title("Twilight Saga, The: Breaking Dawn Part 1 [DVD]") == expected
+    assert normalized_title("The Twilight Saga: Breaking Dawn Part One") == expected
+    assert normalized_title("The Twilight Saga: Breaking Dawn - Part 1 (Two-Disc Special Edition)") == expected
+    assert normalized_title("The Twilight Saga: Eclipse (Special Edition) [Blu-ray] (2010)") == "the twilight saga eclipse"
+
+
+def test_same_title_tolerates_a_wider_rating_gap_than_same_people():
+    people = "Directors: David Slade. Cast: Kristen Stewart"
+    items = [
+        item("t1", "The Twilight Saga: Eclipse (Two-Disc Special Edition)", people, 20129),
+        item("t2", "The Twilight Saga: Eclipse (Single-Disc Edition)", people, 20797),      # 3.3% more: same title, one film
+        item("p1", "", "Directors: Greg Nicotero. Cast: Norman Reedus", 10000),
+        item("p2", "", "Directors: Greg Nicotero. Cast: Norman Reedus", 10300),              # 3% more, people only: kept apart
+    ]
+
+    works = group_editions(items)
+
+    assert works["t1"] == works["t2"]
+    assert works["p1"] != works["p2"]

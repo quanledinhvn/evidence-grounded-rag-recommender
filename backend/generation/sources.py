@@ -1,4 +1,4 @@
-"""Text of the evidence package as it is shown to the LLM (shared by rerank, explain and judge).
+"""Text of the evidence package as it is shown to the LLM (shared by explain and judge).
 
 Items are shown with short codes (C1, C2, ...) instead of Amazon ids and the user id is never
 sent: the provider sees only titles, people, genres, short descriptions and review snippets.

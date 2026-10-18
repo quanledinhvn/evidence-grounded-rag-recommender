@@ -117,18 +117,16 @@ class Fusion:
         return self._rank(lists, excluded, limit)
 
     def recommend_batch(self, user_ids: list[str], limit: int = 50) -> list[list[dict[str, Any]]]:
-        return [ranked for ranked, _ in self.recommend_batch_with_lists(user_ids, limit)]
-
-    def recommend_batch_with_lists(self, user_ids: list[str], limit: int = 50) -> list[tuple[list[dict], dict[str, list[dict]]]]:
-        """(fused list, each member's own list) per user; the member lists give re-rankers their features."""
         lists = {name: model.recommend_batch(user_ids, self.config["depth"]) for name, model in self.members.items()}
-        results = []
 
-        for row, user_id in enumerate(user_ids):
-            user_lists = {name: member_lists[row] for name, member_lists in lists.items()}
-            results.append((self._rank(user_lists, self.all_editions(seen_items(self.data, user_id)), limit), user_lists))
-
-        return results
+        return [
+            self._rank(
+                {name: member_lists[row] for name, member_lists in lists.items()},
+                self.all_editions(seen_items(self.data, user_id)),
+                limit,
+            )
+            for row, user_id in enumerate(user_ids)
+        ]
 
     def save(self, model_dir: Path, member_dirs: dict[str, str], editions_path: Path | None = None) -> None:
         """Fusion has nothing to train: it only remembers which member models and weights to use."""

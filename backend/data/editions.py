@@ -7,9 +7,11 @@ counts as a miss when the target is the Blu-ray.
 Two items are editions of the same film when both hold:
 1. they share a normalised title ("Cast Away [Blu-ray]" -> "cast away") or the same first
    director + first cast member (Prime Video items often have no title, only people);
-2. their rating counts differ by at most 2%: Amazon shows the ratings of all formats of a film
-   together, so editions have nearly the same count (Cast Away: 16,747 / 16,753 / 16,756).
-   Remakes and the seasons of a series have clearly different counts and stay apart.
+2. their rating counts are close: Amazon shows the ratings of all formats of a film together, so
+   editions have nearly the same count (Cast Away: 16,747 / 16,753 / 16,756). The counts were read at
+   different times, so items with the same title may differ by up to 5% (Eclipse: 20,129 / 20,797);
+   items linked only by people, by up to 2%. Remakes and the seasons of a series have clearly
+   different counts (A Christmas Carol 1951 ~9,900, 1984 ~13,700) and stay apart.
 Guards against chaining: two groups that both have titles must share one ("Spider-Man 2" never
 joins "Spider-Man 3"), placeholder names ("Various") are ignored, and bundles ("8-Film
 Collection", "Complete Series", box sets) are never grouped with anything.
@@ -29,7 +31,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 
-RATING_TOLERANCE = 0.02
+TITLE_TOLERANCE = 0.05      # same normalised title
+PEOPLE_TOLERANCE = 0.02     # same first director + first star only
 
 # Bracketed labels like "(Two-Disc Special Edition)" or "[Blu-ray]"; "(Season 1)" is kept.
 FORMAT_LABEL = re.compile(
@@ -40,6 +43,9 @@ FORMAT_LABEL = re.compile(
 )
 BRACKETS = re.compile(r"[\[(]([^\])]*)[\])]")
 FORMAT_WORD = re.compile(r"\b(blu-?ray|dvd|vhs)\b", re.IGNORECASE)
+YEAR_ONLY = re.compile(r"^\s*\d{4}\s*$")
+MOVED_ARTICLE = re.compile(r"^(.+?),\s*the\b", re.IGNORECASE)      # "Twilight Saga, The: ..." -> "The Twilight Saga: ..."
+PART_NUMBER = {"one": "1", "two": "2", "three": "3", "four": "4", "five": "5", "i": "1", "ii": "2", "iii": "3", "iv": "4"}
 
 # Bundles hold several films or seasons, so they are never an edition of one film.
 BUNDLE = re.compile(
@@ -55,10 +61,12 @@ NOT_A_NAME = {"various", "none", "unavailable", "unknown", "n/a", "na", "not ava
 
 
 def normalized_title(title: str) -> str:
-    title = BRACKETS.sub(lambda match: " " if FORMAT_LABEL.search(match.group(1)) else match.group(0), title or "")
-    title = FORMAT_WORD.sub(" ", title)
+    """Lower-case words of the title without format labels or a bracketed year; "Part One" -> "part 1"."""
+    title = BRACKETS.sub(lambda m: " " if FORMAT_LABEL.search(m.group(1)) or YEAR_ONLY.match(m.group(1)) else m.group(0), title or "")
+    title = MOVED_ARTICLE.sub(lambda m: "The " + m.group(1), FORMAT_WORD.sub(" ", title))
+    text = re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
 
-    return re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
+    return re.sub(r"\bpart (one|two|three|four|five|iv|iii|ii|i)\b", lambda m: "part " + PART_NUMBER[m.group(1)], text)
 
 
 def people_key(item_doc: str) -> str:
@@ -112,13 +120,14 @@ def group_editions(items: list[dict[str, Any]]) -> dict[str, str]:
         if people:
             shared[f"people:{people}"].append(item)
 
-    # Within one candidate group, items whose rating counts are within 2% of each other are one film.
-    for group in shared.values():
+    # Within one candidate group, items whose rating counts are close to each other are one film.
+    for key, group in shared.items():
+        tolerance = TITLE_TOLERANCE if key.startswith("title:") else PEOPLE_TOLERANCE
         group.sort(key=lambda item: (item["rating_number"], item["item_id"]))
         first = group[0]
 
         for item in group[1:]:
-            if item["rating_number"] <= first["rating_number"] * (1 + RATING_TOLERANCE):
+            if item["rating_number"] <= first["rating_number"] * (1 + tolerance):
                 join(first["item_id"], item["item_id"])
             else:
                 first = item
