@@ -56,7 +56,7 @@ docker compose -f infra/opensearch/compose.yaml down
 
 Không chạy `down -v` trừ khi chủ động muốn xóa toàn bộ index local.
 
-## Tạo và nạp index
+## Tạo embedding local và nạp index
 
 Tên index phải có version bất biến. Khi thay mapping, encoder hoặc chunking,
 tạo tên mới thay vì sửa index đang dùng.
@@ -72,8 +72,34 @@ uv run --extra search recsys-search create-indices
 uv run --extra search recsys-search plan-catalog \
   --catalog artifacts/movies-tv-2023/catalog_enriched.parquet
 
-uv run --extra search recsys-search index-catalog \
+uv run --extra search recsys-search embed-catalog \
   --catalog artifacts/movies-tv-2023/catalog_enriched.parquet \
+  --artifact artifacts/movies-tv-2023/search-embeddings-v1.parquet \
+  --manifest artifacts/movies-tv-2023/search-embeddings-manifest-v1.json
+```
+
+`embed-catalog` gọi OpenAI theo batch nhưng không kết nối OpenSearch. Vector và
+metadata chunk được ghi vào một Parquet nén Zstandard ở local. Manifest đi kèm
+khóa hash của catalog và artifact, model, dimension và chunking policy để có thể
+kiểm tra lại trước khi index.
+
+Trong lúc chạy, CLI in tiến độ, thời gian đã chạy và ETA ra stderr; JSON kết quả
+cuối vẫn được in riêng ra stdout. Mỗi catalog batch được commit nguyên tử vào thư
+mục `<artifact>.checkpoint`. Nếu API hết retry, mất mạng hoặc tiến trình dừng,
+chạy lại đúng lệnh sẽ xác minh và tái sử dụng các batch đã hoàn tất. Checkpoint
+chỉ được dọn sau khi artifact và manifest cuối đã ghi thành công.
+
+Checkpoint khóa theo hash catalog, model, dimension, chunking policy và batch
+size. Nếu một trong các giá trị này thay đổi, dùng một đường dẫn artifact mới
+hoặc chủ động dọn checkpoint cũ; CLI sẽ không trộn vector từ hai cấu hình.
+
+Khi OpenSearch sẵn sàng, nạp artifact đã tạo mà không gọi lại embedding API:
+
+```bash
+uv run --extra search recsys-search index-artifact \
+  --catalog artifacts/movies-tv-2023/catalog_enriched.parquet \
+  --artifact artifacts/movies-tv-2023/search-embeddings-v1.parquet \
+  --artifact-manifest artifacts/movies-tv-2023/search-embeddings-manifest-v1.json \
   --manifest artifacts/movies-tv-2023/search-index-manifest-v1.json
 ```
 
@@ -81,10 +107,15 @@ uv run --extra search recsys-search index-catalog \
 đếm item có text, số chunk và tổng số từ sau overlap để dự báo khối lượng trước
 khi dùng API trả phí.
 
-Indexer đọc Parquet theo batch, dùng document ID tất định và bulk upsert. Chạy
-lại cùng cấu hình là an toàn; chunk có cùng ID, text hash và embedding model sẽ
-được tái sử dụng thay vì gọi API lần nữa. Manifest chỉ được ghi sau khi cả hai
-index đã nạp và refresh thành công.
+`index-artifact` xác minh hash catalog, hash artifact, model, dimension, số dòng
+và từng vector trước khi tạo hoặc cập nhật index. Sau đó lệnh đọc cả catalog và
+artifact theo batch, dùng document ID tất định và bulk upsert. Vì vậy có thể
+chạy lại an toàn. Manifest index chỉ được ghi sau khi cả hai index đã nạp và
+refresh thành công.
+
+Lệnh `index-catalog` cũ vẫn được giữ cho workflow một bước. Lệnh này gọi
+embedding API và OpenSearch trong cùng một lần chạy; dùng hai lệnh phía trên khi
+cần tạo embedding trước rồi push ở thời điểm khác.
 
 ## Cấu hình
 

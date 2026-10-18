@@ -4,15 +4,20 @@ import json
 import os
 import tempfile
 import unittest
-
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from backend.search.cli import _load_project_env, create_opensearch_client, main
+from backend.search.cli import (
+    _EmbeddingProgressPrinter,
+    _load_project_env,
+    create_opensearch_client,
+    main,
+)
 from backend.search.config import SearchSettings
+from backend.search.indexing import EmbeddingProgress
 
 
 class _FakeIndices:
@@ -43,6 +48,27 @@ class _FakeGateway:
 
 
 class SearchCliTests(unittest.TestCase):
+    def test_formats_embedding_progress_with_eta_on_stderr(self) -> None:
+        output = StringIO()
+        times = iter((100.0, 160.0))
+        printer = _EmbeddingProgressPrinter(output, every=5, clock=lambda: next(times))
+
+        printer(
+            EmbeddingProgress(
+                completed_batches=5,
+                total_batches=10,
+                item_count=2500,
+                chunk_count=10000,
+                resumed_batch_count=0,
+                phase="embedding",
+            )
+        )
+
+        message = output.getvalue()
+        self.assertIn("5/10 (50.0%)", message)
+        self.assertIn("chunks=10000", message)
+        self.assertIn("eta=0:01:00", message)
+
     def test_loads_dotenv_without_overriding_exported_values(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             dotenv_path = Path(directory) / ".env"
@@ -170,6 +196,99 @@ class SearchCliTests(unittest.TestCase):
 
         policy = index.call_args.kwargs["chunking_policy"]
         self.assertEqual((policy.max_words, policy.overlap_words), (80, 10))
+
+    def test_embed_catalog_writes_local_artifact_without_opensearch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            catalog = root / "catalog.parquet"
+            artifact = root / "embeddings.parquet"
+            manifest = root / "embeddings.manifest.json"
+
+            catalog.touch()
+
+            result = SimpleNamespace(
+                item_count=2,
+                chunk_count=3,
+                catalog_sha256="catalog-hash",
+                artifact_sha256="artifact-hash",
+                artifact_path=artifact,
+                manifest_path=manifest,
+            )
+            output = StringIO()
+            progress_output = StringIO()
+
+            with patch(
+                "backend.search.cli.create_embedding_artifact",
+                return_value=result,
+            ) as create_artifact:
+                with patch("backend.search.cli.create_opensearch_client") as client:
+                    with redirect_stdout(output), redirect_stderr(progress_output):
+                        exit_code = main(
+                            [
+                                "embed-catalog",
+                                "--catalog",
+                                str(catalog),
+                                "--artifact",
+                                str(artifact),
+                                "--manifest",
+                                str(manifest),
+                            ]
+                        )
+
+        self.assertEqual(exit_code, 0)
+        client.assert_not_called()
+        create_artifact.assert_called_once()
+        self.assertIn("progress", create_artifact.call_args.kwargs)
+
+        self.assertEqual(json.loads(output.getvalue())["status"], "embedded")
+
+    def test_index_artifact_does_not_create_embedding_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            catalog = root / "catalog.parquet"
+            artifact = root / "embeddings.parquet"
+            artifact_manifest = root / "embeddings.manifest.json"
+
+            index_manifest = root / "index.manifest.json"
+
+            result = SimpleNamespace(
+                item_count=2,
+                chunk_count=3,
+                catalog_sha256="catalog-hash",
+                artifact_sha256="artifact-hash",
+                manifest_path=index_manifest,
+            )
+            output = StringIO()
+
+            with patch("backend.search.cli.create_opensearch_client", return_value=_FakeClient()):
+                with patch("backend.search.cli.OpenSearchGateway", return_value=_FakeGateway()):
+                    with patch(
+                        "backend.search.cli.index_embedding_artifact",
+                        return_value=result,
+                    ) as index_artifact:
+                        with patch("backend.search.cli.OpenAIEmbeddingProvider") as provider:
+                            with redirect_stdout(output):
+                                exit_code = main(
+                                    [
+                                        "index-artifact",
+                                        "--catalog",
+                                        str(catalog),
+                                        "--artifact",
+                                        str(artifact),
+                                        "--artifact-manifest",
+                                        str(artifact_manifest),
+                                        "--manifest",
+                                        str(index_manifest),
+                                    ]
+                                )
+
+        self.assertEqual(exit_code, 0)
+        provider.assert_not_called()
+        index_artifact.assert_called_once()
+
+        self.assertEqual(json.loads(output.getvalue())["status"], "indexed")
 
     def test_requires_complete_basic_auth_pair(self) -> None:
         settings = SearchSettings()

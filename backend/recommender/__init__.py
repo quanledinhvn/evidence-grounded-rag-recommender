@@ -18,6 +18,10 @@ from backend.recommender.models import (
     RankingRun,
     SelectionResult,
 )
+from backend.recommender.opensearch_retrievers import (
+    OpenSearchBM25ContributionRetriever,
+    OpenSearchSemanticContributionRetriever,
+)
 from backend.recommender.pipeline import HybridPipeline
 from backend.recommender.rendering import render_template, verify_explanation
 from backend.recommender.retrievers import (
@@ -40,6 +44,8 @@ __all__ = [
     "HybridPipeline",
     "InterventionHarness",
     "ItemKNNContributionRetriever",
+    "OpenSearchBM25ContributionRetriever",
+    "OpenSearchSemanticContributionRetriever",
     "PAECSelector",
     "PipelineConfig",
     "ProvenanceAtom",

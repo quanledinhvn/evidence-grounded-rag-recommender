@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import math
 import unittest
-
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -200,12 +199,17 @@ class _FakeOpenSearchClient:
         self.bulk_calls: list[dict[str, object]] = []
         self.search_calls: list[dict[str, object]] = []
 
+        self.search_response: dict[str, object] | None = None
+
     def bulk(self, **request: object) -> dict[str, object]:
         self.bulk_calls.append(request)
         return {"errors": False, "items": []}
 
     def search(self, **request: object) -> dict[str, object]:
         self.search_calls.append(request)
+        if self.search_response is not None:
+            return self.search_response
+
         return {
             "hits": {
                 "hits": [
@@ -314,6 +318,7 @@ class OpenSearchGatewayTests(unittest.TestCase):
         )
 
         self.assertEqual(bm25_hits[0]["item_id"], "i2")
+        self.assertEqual(semantic_hits[0]["item_id"], "i2")
         self.assertEqual(bm25_hits[0]["score"], 1.25)
         self.assertIn("explanation", bm25_hits[0])
 
@@ -338,6 +343,40 @@ class OpenSearchGatewayTests(unittest.TestCase):
     def test_rejects_wrong_semantic_dimension(self) -> None:
         with self.assertRaisesRegex(ValueError, "dimension"):
             self.gateway.semantic_search((0.0, 1.0), limit=5)
+
+    def test_reads_ordered_item_chunks_for_the_locked_model(self) -> None:
+        self.client.search_response = {
+            "hits": {
+                "hits": [
+                    {
+                        "_id": "i1:title:0000",
+                        "_score": 1.0,
+                        "_source": {
+                            "chunk_id": "i1:title:0000",
+                            "item_id": "i1",
+                            "ordinal": 0,
+                            "raw_text": "Space",
+                            "embedding_model": "embedding-v1",
+                            "embedding": [1.0, 0.0, 0.0],
+                        },
+                    }
+                ]
+            }
+        }
+
+        chunks = self.gateway.item_chunks(
+            "i1",
+            embedding_model="embedding-v1",
+        )
+
+        self.assertEqual(chunks[0]["chunk_id"], "i1:title:0000")
+        body = self.client.search_calls[0]["body"]
+
+        self.assertEqual(body["query"]["bool"]["filter"], [
+            {"term": {"item_id": "i1"}},
+            {"term": {"embedding_model": "embedding-v1"}},
+        ])
+        self.assertEqual(body["sort"], [{"field_name": "asc"}, {"ordinal": "asc"}])
 
     def test_finds_only_reusable_chunks_with_matching_contract(self) -> None:
         reusable = self.gateway.reusable_chunk_ids(

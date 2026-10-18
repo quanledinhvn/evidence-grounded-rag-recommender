@@ -3,13 +3,20 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
-
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
-from backend.data.io import source_sha256, write_parquet
+from backend.data.io import read_parquet, source_sha256, write_parquet
 from backend.search.chunking import ChunkingPolicy
-from backend.search.indexing import index_catalog, iter_catalog_rows, plan_catalog
+from backend.search.indexing import (
+    create_embedding_artifact,
+    index_catalog,
+    index_embedding_artifact,
+    iter_catalog_rows,
+    plan_catalog,
+)
 
 
 class _FakeEmbedder:
@@ -28,6 +35,7 @@ class _FakeEmbedder:
 class _FakeGateway:
     item_index = "items-v1"
     chunk_index = "chunks-v1"
+    dimensions = 3
 
     def __init__(self) -> None:
         self.items: list[dict[str, Any]] = []
@@ -80,6 +88,305 @@ class _FakeGateway:
 
 
 class SearchIndexingTests(unittest.TestCase):
+    def test_resumes_embedding_from_completed_batch_checkpoint(self) -> None:
+        rows = [
+            {"item_id": "i1", "title": "First"},
+            {"item_id": "i2", "title": "Second"},
+            {"item_id": "i3", "title": "Third"},
+        ]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            catalog_path = root / "catalog.parquet"
+            artifact_path = root / "embeddings.parquet"
+            manifest_path = root / "embeddings.manifest.json"
+
+            write_parquet(catalog_path, rows)
+            first_embed = Mock(
+                side_effect=[
+                    ((0.0, 1.0, 0.0),),
+                    RuntimeError("temporary embedding failure"),
+                ]
+            )
+            failing_embedder = SimpleNamespace(
+                model="test-embedding-model",
+                dimensions=3,
+                embed=first_embed,
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "temporary"):
+                create_embedding_artifact(
+                    catalog_path,
+                    artifact_path,
+                    manifest_path,
+                    failing_embedder,
+                    catalog_batch_size=1,
+                )
+
+            checkpoint_path = artifact_path.with_name(
+                f"{artifact_path.name}.checkpoint"
+            )
+            self.assertTrue(checkpoint_path.is_dir())
+            self.assertFalse(artifact_path.exists())
+
+            resumed_embedder = _FakeEmbedder()
+            progress = []
+
+            result = create_embedding_artifact(
+                catalog_path,
+                artifact_path,
+                manifest_path,
+                resumed_embedder,
+                catalog_batch_size=1,
+                progress=progress.append,
+            )
+            artifact_rows = read_parquet(artifact_path)
+            self.assertFalse(checkpoint_path.exists())
+
+        self.assertEqual(result.chunk_count, 3)
+        self.assertEqual(len(resumed_embedder.calls), 2)
+        self.assertEqual(len(artifact_rows), 3)
+
+        self.assertEqual(progress[-1].completed_batches, 3)
+        self.assertEqual(progress[-1].resumed_batch_count, 1)
+        self.assertEqual(progress[-1].phase, "complete")
+
+    def test_rejects_incompatible_embedding_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            catalog_path = root / "catalog.parquet"
+            artifact_path = root / "embeddings.parquet"
+            manifest_path = root / "embeddings.manifest.json"
+
+            write_parquet(
+                catalog_path,
+                [
+                    {"item_id": "i1", "title": "First"},
+                    {"item_id": "i2", "title": "Second"},
+                ],
+            )
+            failing_embedder = SimpleNamespace(
+                model="test-embedding-model",
+                dimensions=3,
+                embed=Mock(side_effect=RuntimeError("stop")),
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "stop"):
+                create_embedding_artifact(
+                    catalog_path,
+                    artifact_path,
+                    manifest_path,
+                    failing_embedder,
+                    catalog_batch_size=1,
+                )
+
+            resumed_embedder = _FakeEmbedder()
+            with self.assertRaisesRegex(ValueError, "configuration"):
+                create_embedding_artifact(
+                    catalog_path,
+                    artifact_path,
+                    manifest_path,
+                    resumed_embedder,
+                    catalog_batch_size=2,
+                )
+
+        self.assertEqual(resumed_embedder.calls, [])
+
+    def test_reuses_completed_embedding_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            catalog_path = root / "catalog.parquet"
+            artifact_path = root / "embeddings.parquet"
+            manifest_path = root / "embeddings.manifest.json"
+
+            write_parquet(catalog_path, [{"item_id": "i1", "title": "Movie"}])
+            create_embedding_artifact(
+                catalog_path,
+                artifact_path,
+                manifest_path,
+                _FakeEmbedder(),
+            )
+
+            embedder = _FakeEmbedder()
+            progress = []
+
+            result = create_embedding_artifact(
+                catalog_path,
+                artifact_path,
+                manifest_path,
+                embedder,
+                progress=progress.append,
+            )
+
+        self.assertEqual(result.chunk_count, 1)
+        self.assertEqual(embedder.calls, [])
+        self.assertEqual(progress[-1].phase, "complete")
+
+    def test_rejects_artifact_path_that_overwrites_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            catalog_path = Path(directory) / "catalog.parquet"
+            write_parquet(catalog_path, [{"item_id": "i1", "title": "Movie"}])
+
+            original_hash = source_sha256(catalog_path)
+            with self.assertRaisesRegex(ValueError, "distinct"):
+                create_embedding_artifact(
+                    catalog_path,
+                    catalog_path,
+                    Path(directory) / "manifest.json",
+                    _FakeEmbedder(),
+                )
+
+            self.assertEqual(source_sha256(catalog_path), original_hash)
+
+    def test_creates_local_embedding_artifact_and_manifest(self) -> None:
+        rows = [
+            {
+                "item_id": "i1",
+                "title": "First Movie",
+                "description": "space travel",
+                "source_id": "catalog:i1",
+            },
+            {"item_id": "i2", "title": "Second Movie"},
+        ]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            catalog_path = root / "catalog.parquet"
+            artifact_path = root / "embeddings.parquet"
+            manifest_path = root / "embeddings.manifest.json"
+
+            write_parquet(catalog_path, rows)
+            embedder = _FakeEmbedder()
+
+            result = create_embedding_artifact(
+                catalog_path,
+                artifact_path,
+                manifest_path,
+                embedder,
+                chunking_policy=ChunkingPolicy(
+                    fields=("title", "description"),
+                ),
+                catalog_batch_size=1,
+            )
+            artifact_rows = read_parquet(artifact_path)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        self.assertEqual((result.item_count, result.chunk_count), (2, 3))
+        self.assertEqual(len(embedder.calls), 2)
+        self.assertEqual(artifact_rows[0]["chunk_id"], "i1:title:0000")
+
+        self.assertEqual(artifact_rows[0]["embedding"], [0.0, 1.0, 0.0])
+
+        self.assertEqual(manifest["schema_version"], "embedding-artifact-v1")
+        self.assertEqual(manifest["artifact_sha256"], result.artifact_sha256)
+        self.assertEqual(manifest["embedding_dimensions"], 3)
+
+    def test_indexes_precomputed_embedding_artifact(self) -> None:
+        rows = [
+            {"item_id": "i1", "title": "First Movie"},
+            {"item_id": "i2", "title": "Second Movie"},
+        ]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            catalog_path = root / "catalog.parquet"
+            artifact_path = root / "embeddings.parquet"
+            artifact_manifest_path = root / "embeddings.manifest.json"
+
+            index_manifest_path = root / "index.manifest.json"
+
+            write_parquet(catalog_path, rows)
+            embedder = _FakeEmbedder()
+            create_embedding_artifact(
+                catalog_path,
+                artifact_path,
+                artifact_manifest_path,
+                embedder,
+                catalog_batch_size=1,
+            )
+
+            gateway = _FakeGateway()
+            result = index_embedding_artifact(
+                catalog_path,
+                artifact_path,
+                artifact_manifest_path,
+                index_manifest_path,
+                gateway,
+                catalog_batch_size=1,
+                artifact_batch_size=1,
+            )
+            manifest = json.loads(index_manifest_path.read_text(encoding="utf-8"))
+
+        self.assertEqual((result.item_count, result.chunk_count), (2, 2))
+        self.assertEqual([row["item_id"] for row in gateway.items], ["i1", "i2"])
+        self.assertEqual(len(gateway.chunks), 2)
+
+        self.assertEqual((gateway.ensure_count, gateway.refresh_count), (1, 1))
+        self.assertEqual(manifest["schema_version"], "search-index-manifest-v2")
+
+    def test_rejects_artifact_when_catalog_has_changed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            catalog_path = root / "catalog.parquet"
+            artifact_path = root / "embeddings.parquet"
+            artifact_manifest_path = root / "embeddings.manifest.json"
+
+            write_parquet(catalog_path, [{"item_id": "i1", "title": "Original"}])
+            create_embedding_artifact(
+                catalog_path,
+                artifact_path,
+                artifact_manifest_path,
+                _FakeEmbedder(),
+            )
+            write_parquet(catalog_path, [{"item_id": "i1", "title": "Changed"}])
+
+            gateway = _FakeGateway()
+            with self.assertRaisesRegex(ValueError, "catalog hash"):
+                index_embedding_artifact(
+                    catalog_path,
+                    artifact_path,
+                    artifact_manifest_path,
+                    root / "index.manifest.json",
+                    gateway,
+                )
+
+        self.assertEqual(gateway.ensure_count, 0)
+
+    def test_rejects_artifact_from_a_different_embedding_model(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            catalog_path = root / "catalog.parquet"
+            artifact_path = root / "embeddings.parquet"
+            artifact_manifest_path = root / "embeddings.manifest.json"
+
+            write_parquet(catalog_path, [{"item_id": "i1", "title": "Movie"}])
+            create_embedding_artifact(
+                catalog_path,
+                artifact_path,
+                artifact_manifest_path,
+                _FakeEmbedder(),
+            )
+
+            gateway = _FakeGateway()
+            with self.assertRaisesRegex(ValueError, "model"):
+                index_embedding_artifact(
+                    catalog_path,
+                    artifact_path,
+                    artifact_manifest_path,
+                    root / "index.manifest.json",
+                    gateway,
+                    expected_embedding_model="another-model",
+                )
+
+        self.assertEqual(gateway.ensure_count, 0)
+
     def test_plans_catalog_without_embedding_or_indexing(self) -> None:
         rows = [
             {

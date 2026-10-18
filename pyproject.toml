@@ -30,6 +30,8 @@ recsys-data = "backend.data.cli:main"
 recsys-cf = "backend.cf.cli:main"
 recsys-item-knn = "backend.item_knn.cli:main"
 recsys-profile = "backend.profile.cli:main"
+recsys-recommend = "backend.recommender.cli:main"
+recsys-evaluate = "backend.recommender.evaluation_cli:main"
 recsys-search = "backend.search.cli:main"
 
 [tool.setuptools.packages.find]

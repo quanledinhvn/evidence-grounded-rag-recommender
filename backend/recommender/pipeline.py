@@ -160,6 +160,17 @@ class HybridPipeline:
         atoms: tuple[ProvenanceAtom, ...],
     ) -> tuple[RankedItem, ...]:
         values: list[RankedItem] = []
+        attribution_by_candidate: dict[str, dict[str, float]] = {}
+
+        for atom in atoms:
+            source_values = attribution_by_candidate.setdefault(
+                atom.candidate_id,
+                {},
+            )
+            source_values[atom.source_id] = (
+                source_values.get(atom.source_id, 0.0)
+                + atom.fused_contribution
+            )
 
         for item_id in candidate_ids:
             branch_scores = {
@@ -170,16 +181,7 @@ class HybridPipeline:
                 self.config.weights[branch] * score / denominators[branch]
                 for branch, score in branch_scores.items()
             )
-            source_attribution: dict[str, float] = {}
-
-            for atom in atoms:
-                if atom.candidate_id != item_id:
-                    continue
-
-                source_attribution[atom.source_id] = (
-                    source_attribution.get(atom.source_id, 0.0)
-                    + atom.fused_contribution
-                )
+            source_attribution = dict(attribution_by_candidate.get(item_id, {}))
 
             values.append(
                 RankedItem(

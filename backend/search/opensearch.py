@@ -224,6 +224,46 @@ class OpenSearchGateway:
 
         return _search_hits(response)
 
+    def item_chunks(
+        self,
+        item_id: str,
+        *,
+        embedding_model: str,
+        limit: int = 1000,
+    ) -> tuple[dict[str, Any], ...]:
+        """Return indexed semantic chunks for one catalog item."""
+        normalized_item_id = item_id.strip()
+        normalized_model = embedding_model.strip()
+
+        if not normalized_item_id or not normalized_model:
+            raise ValueError("Item ID and embedding model must not be empty")
+
+        _validate_limit(limit)
+        body = {
+            "size": limit,
+            "_source": [
+                "chunk_id",
+                "item_id",
+                "field_name",
+                "ordinal",
+                "raw_text",
+                "embedding_model",
+                "embedding",
+            ],
+            "query": {
+                "bool": {
+                    "filter": [
+                        {"term": {"item_id": normalized_item_id}},
+                        {"term": {"embedding_model": normalized_model}},
+                    ]
+                }
+            },
+            "sort": [{"field_name": "asc"}, {"ordinal": "asc"}],
+        }
+        response = self._client.search(index=self.chunk_index, body=body)
+
+        return _search_hits(response)
+
     def reusable_chunk_ids(
         self,
         chunk_hashes: Mapping[str, str],
