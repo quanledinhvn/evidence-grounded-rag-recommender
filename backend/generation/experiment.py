@@ -166,7 +166,7 @@ def rerank_summary(records: list[dict[str, Any]], reranks: dict[str, dict], edit
         return np.array([film_rank(items, r["query"]["target_item_id"], editions) for r, items in zip(records, lists)])
 
     users = [r["query"]["user_id"] for r in records]
-    positive = np.array([(r["query"]["target_rating"] or 0) >= 4 for r in records])
+    positive = np.array([(r["query"]["target_rating"] or 0) >= 4 for r in records], dtype=bool)
     summary = {"users": len(records)}
 
     for name, lists in [("fusion", [r["top50"] for r in records]),
