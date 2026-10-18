@@ -3,7 +3,7 @@
     python -m backend.service --user-id AGXVBIUFLFGMVLATYXHJYL4A5Q7Q --as-of 1530556520803 --phase test
 
 profile -> fusion with editions: the top 10 in fusion order (no re-ranking: an LLM, a cross-encoder
-and a learning-to-rank model were all tried and none beat the fusion order, see CLAUDE.md)
+and a learning-to-rank model were all tried and none beat the fusion order, see docs/results/results.md)
 -> evidence package of the top 10 -> the LLM explains the top 3 with citations -> the validator
 keeps the claims it can check and renders them with their source ids.
 
@@ -31,6 +31,7 @@ from backend.profile.profile import build_profile, load_catalog, load_history
 
 
 FUSION = {"validation": "runs/validation/fusion-editions", "test": "runs/fusion-editions-movies-tv-2023/test"}
+QUERIES = {"validation": "queries_val.parquet", "test": "queries_test.parquet"}
 TOP_K, EXPLAINED = 10, 3
 
 

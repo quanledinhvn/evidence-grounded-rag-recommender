@@ -1,6 +1,14 @@
 # Kiến trúc hệ gợi ý phim và chương trình truyền hình RAG–LLM
 
-> **Trạng thái:** pipeline nhập dữ liệu, Profile Builder và CF (ItemKNN là nhánh chính, BPR-MF là baseline; kết quả ở mục 6 của [overview.md](overview.md)) đã có trong `backend/`; BM25, embedding, fusion, evidence store, LLM và API còn là thiết kế đề xuất để triển khai [proposal.md](proposal.md). Phạm vi: pipeline thí nghiệm + FastAPI server + CLI; không yêu cầu web, microservice hay fine-tune LLM.
+> **Trạng thái (18/10/2026):** đây là bản thiết kế ban đầu; phần lớn đã cài đặt trong `backend/`, với các điểm **khác thiết kế** sau (lý do và số liệu ở [results/results.md](results/results.md)):
+>
+> - **Q3 fusion** dùng fusion theo điểm (ItemKNN + BM25 + prior popularity) và **gom phiên bản của cùng một phim**, thay cho công thức `rank_score` + `alpha` ở mục 4.1.
+> - **Q5 LLM rerank đã bỏ:** LLM, cross-encoder và learning-to-rank đều không xếp tốt hơn thứ tự fusion; hệ thống trả top 10 của fusion. Các run E/F ở mục 6 vì vậy chỉ còn phần giải thích (run G trong [overview.md](overview.md)).
+> - **Q6 giải thích** đúng như thiết kế (JSON claims, `evidence_ids`/`history_ids`, validator, renderer); validator thêm kiểm tra tên người và độ giống MiniLM. LLM: Gemini `gemini-3.5-flash-lite`; giám khảo `gemini-3.5-flash`.
+> - **Dữ liệu:** không dựng Dense-Works; dùng tập 5-core có sẵn + gom phiên bản.
+> - **Giao diện:** có CLI (`recsys-demo`, `recsys-llm`); **chưa có FastAPI**.
+>
+> Phạm vi ban đầu: pipeline thí nghiệm + FastAPI server + CLI; không yêu cầu web, microservice hay fine-tune LLM.
 
 **Hợp đồng chính:** nhận `user_id` + `as_of`, trả tối đa 10 sản phẩm Movies and TV chưa tương tác; giải thích tối đa ba sản phẩm đầu bằng nguồn truy xuất được. Item là `parent_asin`, có thể đại diện cho phim, chương trình hoặc một sản phẩm phát hành liên quan. LLM chỉ xếp hạng item đã truy xuất.
 

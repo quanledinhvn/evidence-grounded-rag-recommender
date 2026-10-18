@@ -13,8 +13,8 @@ from scipy.sparse import csr_matrix
 from backend.cf.bpr import BPR
 from backend.cf.cli import main as cf_main
 from backend.cf.common import Popularity, load_fit_data, top_k
-from backend.cf.evaluate import evaluate
 from backend.cf.itemknn import ItemKNN, cosine_top_k, recency_weights
+from backend.eval.evaluate import evaluate
 
 
 def write_dataset(tmp_path):
@@ -211,7 +211,7 @@ def test_cli_train_recommend_evaluate(tmp_path, capsys):
 
 
 def test_segments_split_queries_by_history_popularity_and_title(tmp_path):
-    from backend.cf.segments import history_segment, popularity_segment, segment_report
+    from backend.eval.segments import history_segment, popularity_segment, segment_report
 
     assert [history_segment(n) for n in (1, 2, 3, 6, 21)] == ["1-2", "1-2", "3-5", "6-20", ">20"]
     assert [popularity_segment(r, 1000) for r in (0, 9, 10, 99, 100)] == ["head", "head", "torso", "torso", "tail"]

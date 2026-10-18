@@ -1,6 +1,8 @@
 # Tổng quan đồ án: hệ gợi ý phim có giải thích dựa trên bằng chứng
 
 > Tài liệu này mô tả cấu trúc tổng thể của đồ án ở mức dễ hiểu. Chi tiết hợp đồng từng module, schema và quy tắc chống rò rỉ nằm ở [architecture.md](architecture.md).
+>
+> **Cập nhật 18/10/2026 — thiết kế cuối khác bản dưới ở ba điểm:** (1) **không có bước ⑤ xếp lại bằng LLM** (đã thử, không vượt thứ tự fusion; run F bỏ), LLM chỉ làm giải thích có trích dẫn (run G); (2) **không dựng Dense-Works**, dùng tập 5-core có sẵn và gom phiên bản của cùng một phim (`backend/data/editions.py`); (3) code tổ chức như trong [README.md](../README.md). Số liệu mới nhất (mục 6 bên dưới là số cũ của CF) ở [results/results.md](results/results.md) và [results/smoke_test_10_record.md](results/smoke_test_10_record.md).
 
 ## 1. Đồ án làm gì
 

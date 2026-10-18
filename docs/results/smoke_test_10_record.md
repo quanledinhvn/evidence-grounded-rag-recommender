@@ -1,6 +1,6 @@
 # Smoke test 10 record — hệ thống cuối (fusion + bằng chứng + giải thích có trích dẫn)
 
-Lệnh: `python -m backend.generation.experiment --phase test --sample 5 --with-target 5 --output-dir runs/llm/smoke-10 --report docs/smoke_test_10_record.md`; dữ liệu thô (gói bằng chứng, câu trả lời LLM, nhãn giám khảo) ở `runs/llm/smoke-10/`. Sinh tự động bởi `python -m backend.generation.experiment` (2026-10-18 21:57). Phần "Đánh giá tổng quan" ở cuối do người chạy viết.
+Lệnh: `python -m backend.generation.experiment --phase test --sample 5 --with-target 5 --output-dir runs/llm/smoke-10 --report docs/results/smoke_test_10_record.md`; dữ liệu thô (gói bằng chứng, câu trả lời LLM, nhãn giám khảo) ở `runs/llm/smoke-10/`. Sinh tự động bởi `python -m backend.generation.experiment` (2026-10-18 21:57). Phần "Đánh giá tổng quan" ở cuối do người chạy viết.
 
 ## 1. Dữ liệu và cấu hình
 

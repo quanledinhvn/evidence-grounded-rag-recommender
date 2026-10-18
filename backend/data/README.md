@@ -3,9 +3,13 @@
 | File | Việc |
 |---|---|
 | `importer.py` | Đọc 3 CSV split (train/valid/test), kiểm tra, ghi Parquet |
-| `enrich.py` | Nối metadata (title, mô tả, đạo diễn, diễn viên…) vào catalog theo `parent_asin` |
+| `enrich.py` | Nối metadata (title, mô tả, đạo diễn, diễn viên…) vào catalog theo `parent_asin`; tạo `genres`, `item_doc` |
+| `editions.py` | Gom các phiên bản (DVD, Blu-ray, Prime Video) của cùng một phim → `editions.parquet`; `borrow_titles` |
+| `reviews.py` | Review thô → kho bằng chứng `reviews.sqlite`; lấy review trước `as_of` |
 | `io.py` | Hàm đọc/ghi JSON, JSONL, hash file |
-| `cli.py` | Lệnh `recsys-data` |
+| `cli.py` | Lệnh `recsys-data import-splits / enrich-catalog / group-editions / import-reviews / reorganize` |
+
+Cách dùng `group-editions` và `import-reviews` (đầu vào, lý do, ví dụ): bước 8 và 10 trong [docs/guide.md](../../docs/guide.md).
 
 ## 1. Nhập split
 

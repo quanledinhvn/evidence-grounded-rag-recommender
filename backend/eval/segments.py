@@ -9,7 +9,7 @@ Segments use only what is known before the query (fit data and catalog), never t
 With `editions` a hit is any edition of the target film ("same film"). Recall@20 is reported too:
 20 is the pool the LLM re-ranks.
 
-    python -m backend.cf.segments --member itemknn=runs/itemknn-movies-tv-2023/test ...
+    python -m backend.eval.segments --member itemknn=runs/itemknn-movies-tv-2023/test ...
         --queries artifacts/movies-tv-2023/queries_test.parquet --catalog ... --editions ... --query-limit 50000
 """
 
@@ -18,7 +18,6 @@ from __future__ import annotations
 import argparse
 import json
 
-from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -26,9 +25,9 @@ import numpy as np
 import pyarrow.parquet as pq
 
 from backend.cf.common import Popularity
-from backend.cf.evaluate import film_rank, load_queries, ranking_metrics
 from backend.data.editions import load_editions
 from backend.data.io import write_json
+from backend.eval.evaluate import film_rank, load_queries, ranking_metrics
 
 
 HISTORY_BINS = [(2, "1-2"), (5, "3-5"), (20, "6-20")]
@@ -108,7 +107,7 @@ def summarize_models(ranks: dict[str, np.ndarray], mask: np.ndarray) -> dict[str
 def main(argv: list[str] | None = None) -> int:
     from backend.cf.cli import load_model, pairs
 
-    parser = argparse.ArgumentParser(prog="python -m backend.cf.segments")
+    parser = argparse.ArgumentParser(prog="python -m backend.eval.segments")
     parser.add_argument("--member", action="append", required=True, help="name=model_dir, repeatable")
     parser.add_argument("--queries", type=Path, required=True)
     parser.add_argument("--catalog", type=Path, required=True)

@@ -107,6 +107,11 @@ def max_similarity(claim: dict[str, Any], package: dict[str, Any], encode: Calla
     return float((vectors[1:] @ vectors[0]).max())
 
 
+def kept(claim: dict[str, Any], min_similarity: float) -> bool:
+    """A checked claim survives when it has no problem and is close enough to its sources."""
+    return not claim["problems"] and claim["similarity"] >= min_similarity
+
+
 def render(claims: list[dict[str, Any]]) -> str:
     """'Claim one [E2][H1]. Claim two [E3].' - citations come from the checked ids, not from the model's text."""
     sentences = []

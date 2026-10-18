@@ -5,8 +5,9 @@
 | `common.py` | `FitData` (lịch sử từng user theo thời gian), `load_fit_data`, `Popularity`, `top_k`, `rank_items` |
 | `itemknn.py` | ItemKNN có trọng số độ gần đây — nhánh CF chính |
 | `bpr.py` | BPR-MF (thư viện `implicit`) — baseline |
-| `evaluate.py` | NDCG@10, HR@10, Recall@50 trên file query |
-| `cli.py` | Lệnh `recsys-cf train / evaluate / recommend` |
+| `cli.py` | Lệnh `recsys-cf train / evaluate / recommend / fuse / tune-fusion` cho mọi model (ItemKNN, BPR, BM25, Dense, Fusion) |
+
+Đánh giá (NDCG@10, HR@10, Recall@50, metric cùng phim, phân tích theo nhóm) nằm ở `backend/eval/`.
 
 Mọi model có cùng giao diện: `fit(data, ...)`, `recommend(user_id, limit, exclude)`, `recommend_batch(user_ids, limit)`, `save(dir)`, `load(dir)`. Kết quả là danh sách `{"item_id", "score", "source"}`; `source` cho biết item đến từ model hay được bổ sung bằng popularity.
 

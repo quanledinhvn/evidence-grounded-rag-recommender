@@ -13,7 +13,7 @@ method="score" (normalised score fusion, the default)
     Keeps how *confident* each member is (a 0.34 ItemKNN similarity counts more than 0.01),
     and the popularity prior can lift popular items that sit deep in a member's list.
 
-On validation RRF never beat ItemKNN alone; see CLAUDE.md for the numbers.
+On validation RRF never beat ItemKNN alone; see docs/results/results.md for the numbers.
 
 With `editions` (backend/data/editions.py) the final list keeps one edition per film and
 leaves out every edition of a film the user has already seen.
@@ -28,9 +28,9 @@ from typing import Any
 import numpy as np
 
 from backend.cf.common import Popularity, item_indices, rank_items, seen_items
-from backend.cf.evaluate import evaluate
 from backend.data.editions import load_editions
 from backend.data.io import read_json, write_json
+from backend.eval.evaluate import evaluate
 
 
 def own_items(member: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:

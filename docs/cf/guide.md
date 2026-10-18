@@ -223,7 +223,7 @@ Nếu test metric được dùng để chọn số factors, learning rate hoặc
 | `backend/cf/common.py` | `load_fit_data` đọc split được phép theo pha; `FitData` giữ lịch sử từng user theo thời gian; `Popularity`; `top_k`; `rank_items` ghép kết quả model với phần bổ sung popularity. |
 | `backend/cf/bpr.py` | Class `BPR` bọc `implicit.cpu.bpr.BayesianPersonalizedRanking`. |
 | `backend/cf/itemknn.py` | Class `ItemKNN`, nhánh CF chính (xem [backend/cf/README.md](../../backend/cf/README.md#itemknn)). |
-| `backend/cf/evaluate.py` | `evaluate(model, queries)` tính NDCG@10, HR@10, Recall@50. |
+| `backend/eval/evaluate.py` | `evaluate(model, queries)` tính NDCG@10, HR@10, Recall@50. |
 | `backend/cf/cli.py` | Lệnh `recsys-cf train / evaluate / recommend`. |
 
 ```text

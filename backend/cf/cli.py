@@ -10,10 +10,10 @@ from typing import Any
 
 from backend.cf.bpr import BPR
 from backend.cf.common import Popularity, load_fit_data
-from backend.cf.evaluate import evaluate
 from backend.cf.itemknn import ItemKNN
 from backend.data.editions import load_editions
 from backend.data.io import read_json, write_json
+from backend.eval.evaluate import evaluate
 from backend.retrieval.bm25 import BM25
 from backend.retrieval.dense import Dense
 from backend.retrieval.fusion import Fusion, tune_weights
