@@ -4,6 +4,11 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
+# Local environment files and secrets
+.env
+.env.*
+!.env.example
+
 # Local raw datasets
 dataset/2023/*.csv
 dataset/2023/*.jsonl

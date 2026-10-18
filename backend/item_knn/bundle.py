@@ -2,14 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
-
 from implicit.nearest_neighbours import (
     CosineRecommender,
     ItemItemRecommender,
@@ -18,7 +16,6 @@ from implicit.nearest_neighbours import (
 from scipy.sparse import csr_matrix, load_npz, save_npz
 
 from backend.data.io import read_parquet, source_sha256, write_parquet
-
 
 Phase = Literal["validation", "test"]
 

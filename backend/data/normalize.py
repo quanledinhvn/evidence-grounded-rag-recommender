@@ -3,11 +3,8 @@ from __future__ import annotations
 import hashlib
 import html
 import json
-
 import re
-from datetime import datetime
-from datetime import timezone
-
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -15,14 +12,13 @@ from backend.data.io import iter_jsonl, source_sha256, write_parquet
 from backend.data.validation import (
     is_valid_id,
     metadata_item_id,
-    review_item_id,
     review_issues,
+    review_item_id,
     review_rating,
     review_timestamp,
     review_user_id,
     usable_text_count,
 )
-
 
 CatalogPolicy = Literal["all_reviews", "metadata_text"]
 
@@ -86,11 +82,11 @@ def normalize_dataset(
     invalid_review_lines: list[int] = []
     reviewed_items: set[str] = set()
 
-    effective_audit_time = audit_time or datetime.now(timezone.utc)
+    effective_audit_time = audit_time or datetime.now(UTC)
     if effective_audit_time.tzinfo is None:
-        effective_audit_time = effective_audit_time.replace(tzinfo=timezone.utc)
+        effective_audit_time = effective_audit_time.replace(tzinfo=UTC)
     else:
-        effective_audit_time = effective_audit_time.astimezone(timezone.utc)
+        effective_audit_time = effective_audit_time.astimezone(UTC)
 
     for line_number, record in iter_jsonl(reviews_path):
         if review_issues(record, effective_audit_time):
@@ -272,7 +268,7 @@ def _catalog_row(
 
 
 def _stable_id(source_hash: str, line_number: int) -> str:
-    payload = f"{source_hash}:{line_number}".encode("utf-8")
+    payload = f"{source_hash}:{line_number}".encode()
     return hashlib.sha256(payload).hexdigest()
 
 

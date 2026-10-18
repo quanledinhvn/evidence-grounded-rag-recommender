@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-
 from pathlib import Path
 from time import perf_counter
 from typing import Any

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -11,7 +10,6 @@ from backend.data.io import (
     source_sha256,
     write_parquet,
 )
-
 
 _INTERACTION_COLUMNS = (
     "user_id",

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from random import Random
 from time import perf_counter
 from typing import Any
 
-import math
 import numpy as np
 
 from backend.cf.baselines import recommend_popularity

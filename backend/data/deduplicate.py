@@ -5,7 +5,6 @@ from typing import Any
 
 from backend.data.io import read_parquet, write_parquet
 
-
 _INTERACTION_COLUMNS = (
     "user_id",
     "item_id",

@@ -2,14 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-
-from collections import Counter
-from collections import defaultdict
-
-from datetime import datetime
-from datetime import timezone
+from collections import Counter, defaultdict
+from datetime import UTC, datetime
 from pathlib import Path
-
 from typing import Any
 
 from backend.data.io import iter_jsonl, source_sha256
@@ -17,12 +12,11 @@ from backend.data.validation import (
     is_valid_id,
     metadata_item_id,
     review_date_mismatch,
-    review_item_id,
     review_issues,
+    review_item_id,
     review_user_id,
     usable_text_count,
 )
-
 
 _REVIEW_METRICS = (
     "review_rows",
@@ -68,9 +62,9 @@ def audit_dataset(
     *,
     audit_time: datetime | None = None,
 ) -> dict[str, Any]:
-    effective_audit_time = audit_time or datetime.now(timezone.utc)
+    effective_audit_time = audit_time or datetime.now(UTC)
     if effective_audit_time.tzinfo is None:
-        effective_audit_time = effective_audit_time.replace(tzinfo=timezone.utc)
+        effective_audit_time = effective_audit_time.replace(tzinfo=UTC)
 
     review_state = _audit_reviews(reviews_path, effective_audit_time)
     metadata_state = _audit_metadata(metadata_path)
@@ -107,7 +101,7 @@ def audit_dataset(
 
     return {
         "schema_version": "d0-audit-v1",
-        "audit_time": effective_audit_time.astimezone(timezone.utc).isoformat(),
+        "audit_time": effective_audit_time.astimezone(UTC).isoformat(),
         "sources": {
             "reviews": _source_details(reviews_path),
             "metadata": _source_details(metadata_path),

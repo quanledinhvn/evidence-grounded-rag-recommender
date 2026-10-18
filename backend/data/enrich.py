@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +14,6 @@ from backend.data.io import (
 )
 from backend.data.normalize import clean_text
 from backend.data.validation import metadata_item_id
-
 
 _CATALOG_COLUMNS = (
     "item_id",
@@ -309,7 +307,7 @@ def _enriched_row(
 
 
 def _source_id(metadata_hash: str, line_number: int) -> str:
-    payload = f"{metadata_hash}:{line_number}".encode("utf-8")
+    payload = f"{metadata_hash}:{line_number}".encode()
 
     return hashlib.sha256(payload).hexdigest()
 

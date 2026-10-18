@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 import math
-from datetime import datetime
-from datetime import timezone
-
+from datetime import UTC, datetime
 from typing import Any
-
 
 TEXT_FIELD_GROUPS = (
     ("title",),
@@ -115,7 +112,7 @@ def review_date_mismatch(record: dict[str, Any]) -> bool:
 
     try:
         text_date = datetime.strptime(review_time.strip(), "%m %d, %Y").date()
-        timestamp_date = datetime.fromtimestamp(timestamp, timezone.utc).date()
+        timestamp_date = datetime.fromtimestamp(timestamp, UTC).date()
     except (OverflowError, OSError, ValueError):
         return True
 
@@ -124,6 +121,6 @@ def review_date_mismatch(record: dict[str, Any]) -> bool:
 
 def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
+        return value.replace(tzinfo=UTC)
 
-    return value.astimezone(timezone.utc)
+    return value.astimezone(UTC)

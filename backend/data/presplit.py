@@ -3,12 +3,10 @@ from __future__ import annotations
 import csv
 import json
 import math
-
 from pathlib import Path
 from typing import Any
 
 from backend.data.io import source_sha256
-
 
 _SOURCE_COLUMNS = ("user_id", "parent_asin", "rating", "timestamp", "history")
 _BATCH_SIZE = 50_000

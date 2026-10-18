@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import csv
 import hashlib
 import json
-
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -13,7 +12,6 @@ import numpy as np
 
 from backend.cf.bpr import BPRConfig, BPRModel, config_to_dict
 from backend.data.io import read_parquet, source_sha256, write_parquet
-
 
 Phase = Literal["validation", "test"]
 

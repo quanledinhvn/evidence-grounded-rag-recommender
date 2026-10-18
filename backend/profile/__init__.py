@@ -1,6 +1,6 @@
 from backend.profile.builder import (
-    CatalogStore,
     CatalogItem,
+    CatalogStore,
     HistoryStore,
     InMemoryCatalogStore,
     Interaction,
@@ -14,7 +14,6 @@ from backend.profile.builder import (
 )
 from backend.profile.catalog_store import ParquetCatalogStore
 from backend.profile.history_store import InMemoryHistoryStore, ParquetHistoryStore
-
 
 __all__ = [
     "CatalogItem",

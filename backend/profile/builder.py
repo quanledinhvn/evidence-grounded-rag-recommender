@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import math
-
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol
-
 
 Phase = Literal["validation", "test"]
 Sentiment = Literal["positive", "neutral", "negative"]

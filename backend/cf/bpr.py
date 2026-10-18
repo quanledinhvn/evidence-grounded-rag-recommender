@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import math
-
 from dataclasses import dataclass
 from importlib.metadata import version
 from typing import Any
 
 import numpy as np
-
 from implicit.cpu.bpr import BayesianPersonalizedRanking
 from scipy.sparse import csr_matrix
 
