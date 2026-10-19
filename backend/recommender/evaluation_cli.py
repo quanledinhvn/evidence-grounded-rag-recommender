@@ -83,11 +83,15 @@ def main(argv: list[str] | None = None) -> int:
         bundle.manifest,
         search_manifest,
     )
+    weights = {"itemknn": 0.5, "bm25": 0.5}
+    if args.semantic:
+        weights = {"itemknn": 1 / 3, "bm25": 1 / 3, "semantic": 1 / 3}
+
     config = PipelineConfig(
         top_k=10,
         pool_size=50,
         evidence_budget=3,
-        weights={"itemknn": 1 / 3, "bm25": 1 / 3, "semantic": 1 / 3},
+        weights=weights,
     )
     retrievers = {
         "itemknn": ItemKNNContributionRetriever(bundle, args.artifact_version),
@@ -95,12 +99,14 @@ def main(argv: list[str] | None = None) -> int:
             gateway,
             args.artifact_version,
         ),
-        "semantic": OpenSearchSemanticContributionRetriever(
+    }
+    if args.semantic:
+        retrievers["semantic"] = OpenSearchSemanticContributionRetriever(
             gateway,
             args.artifact_version,
             settings.embedding_model,
-        ),
-    }
+        )
+
     pipeline = HybridPipeline(
         retrievers,
         config,
@@ -124,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
         "sample_size": len(cases),
         "seed": args.seed,
         "profile_phase": "test",
+        "semantic_enabled": args.semantic,
         "pipeline": asdict(config),
     }
     write_json(args.output_dir / "frozen_config.json", frozen_config)
@@ -134,6 +141,7 @@ def main(argv: list[str] | None = None) -> int:
         cases,
         checkpoint_path=args.output_dir / "evaluation.checkpoint.jsonl",
         paec_limit=args.paec_limit,
+        progress=lambda message: print(message, flush=True),
     )
     write_json(args.output_dir / "ranking_metrics.json", metrics)
     write_json(args.output_dir / "paec_metrics.json", metrics["paec"])
@@ -145,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
         "schema_version": "hybrid-evaluation-run-manifest-v1",
         "artifact_manifest_hash": artifact_hash,
         "completed_query_count": metrics["completed_query_count"],
+        "semantic_enabled": args.semantic,
         "input_hashes": {
             "splits": source_sha256(args.splits),
             "catalog": source_sha256(args.catalog),
@@ -185,6 +194,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=42)
 
     parser.add_argument("--paec-limit", type=int, default=100)
+    parser.add_argument(
+        "--semantic",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable semantic retrieval (default: enabled; use --no-semantic to disable)",
+    )
 
     return parser
 

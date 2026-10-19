@@ -10,7 +10,7 @@ import numpy as np
 from scipy.sparse import csr_matrix
 
 from backend.item_knn import ItemKNNBundle, ItemKNNConfig
-from backend.recommender.cli import run_recommendation, write_json
+from backend.recommender.cli import _build_parser, run_recommendation, write_json
 from backend.recommender.profile_io import load_profile
 
 
@@ -40,6 +40,31 @@ class RecommenderProfileIOTests(unittest.TestCase):
 
 
 class RecommenderCLITests(unittest.TestCase):
+    def test_semantic_cli_switch_defaults_on_and_can_be_disabled(self) -> None:
+        required = [
+            "--profile", "profile.json",
+            "--item-knn-bundle", "bundle",
+            "--search-manifest", "manifest.json",
+        ]
+
+        self.assertTrue(_build_parser().parse_args(required).semantic)
+        self.assertFalse(
+            _build_parser().parse_args([*required, "--no-semantic"]).semantic
+        )
+
+    def test_llm_explanation_switch_is_opt_in(self) -> None:
+        required = [
+            "--profile", "profile.json",
+            "--item-knn-bundle", "bundle",
+            "--search-manifest", "manifest.json",
+        ]
+
+        self.assertFalse(_build_parser().parse_args(required).llm_explanation)
+        self.assertTrue(
+            _build_parser().parse_args([*required, "--llm-explanation"])
+            .llm_explanation
+        )
+
     def test_runs_frozen_three_branch_pipeline_without_seen_items(self) -> None:
         bundle = _bundle()
         gateway = _Gateway()
@@ -76,7 +101,97 @@ class RecommenderCLITests(unittest.TestCase):
             "bm25": 1.0 / 3.0,
             "semantic": 1.0 / 3.0,
         })
+        self.assertTrue(result["semantic_enabled"])
         self.assertTrue(result["artifact_manifest_hash"])
+
+    def test_can_disable_semantic_retrieval(self) -> None:
+        bundle = _bundle()
+        gateway = _Gateway()
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile_path = root / "profile.json"
+            manifest_path = root / "search-manifest.json"
+
+            profile_path.write_text(json.dumps(_profile_payload()), encoding="utf-8")
+            manifest_path.write_text(
+                json.dumps({"schema_version": "search-index-manifest-v2"}),
+                encoding="utf-8",
+            )
+
+            with patch.object(ItemKNNBundle, "load", return_value=bundle):
+                result = run_recommendation(
+                    profile_path,
+                    root / "bundle",
+                    manifest_path,
+                    gateway=gateway,
+                    top_k=2,
+                    pool_size=3,
+                    include_paec=False,
+                    include_semantic=False,
+                )
+
+        self.assertEqual(result["config"]["weights"], {
+            "itemknn": 0.5,
+            "bm25": 0.5,
+        })
+        self.assertFalse(result["semantic_enabled"])
+        self.assertEqual(gateway.semantic_calls, 0)
+
+        for item in result["ranking"]:
+            self.assertNotIn("semantic", item["branch_scores"])
+
+    def test_passes_paec_certificate_to_llm_explanation(self) -> None:
+        bundle = _bundle()
+        gateway = _Gateway()
+        llm_result = {
+            "status": "generated",
+            "text": "Grounded explanation.",
+            "citations": ["H1"],
+            "model": "test-model",
+            "reason": None,
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile_path = root / "profile.json"
+            manifest_path = root / "search-manifest.json"
+
+            profile_path.write_text(json.dumps(_profile_payload()), encoding="utf-8")
+            manifest_path.write_text(
+                json.dumps({"schema_version": "search-index-manifest-v2"}),
+                encoding="utf-8",
+            )
+
+            with patch.object(ItemKNNBundle, "load", return_value=bundle):
+                with patch(
+                    "backend.recommender.cli.generate_llm_explanation",
+                    return_value=llm_result,
+                ) as generator:
+                    result = run_recommendation(
+                        profile_path,
+                        root / "bundle",
+                        manifest_path,
+                        gateway=gateway,
+                        top_k=2,
+                        pool_size=3,
+                        include_paec=False,
+                        include_llm_explanation=True,
+                        llm_model="test-model",
+                    )
+
+        self.assertEqual(result["llm_explanation"], llm_result)
+        self.assertEqual(
+            generator.call_args.args[0],
+            result["ranking"][0]["item_id"],
+        )
+        self.assertIsNone(generator.call_args.args[1])
+        self.assertEqual(generator.call_args.args[2], ())
+        self.assertEqual(
+            generator.call_args.kwargs["fallback_sources"][0].history_id,
+            "H1",
+        )
+        self.assertEqual(generator.call_args.kwargs["model"], "test-model")
 
     def test_writes_deterministic_json_and_creates_parent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -89,6 +204,9 @@ class RecommenderCLITests(unittest.TestCase):
 
 
 class _Gateway:
+    def __init__(self) -> None:
+        self.semantic_calls = 0
+
     def bm25_search(
         self,
         query: str,
@@ -117,6 +235,8 @@ class _Gateway:
         limit: int,
         excluded_item_ids: tuple[str, ...] = (),
     ) -> tuple[dict[str, object], ...]:
+        self.semantic_calls += 1
+
         return (
             {"item_id": "c3", "score": 1.5, "raw_text": "future world"},
         )

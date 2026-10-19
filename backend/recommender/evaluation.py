@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import perf_counter
@@ -13,8 +14,6 @@ from backend.profile import UserProfile
 from backend.recommender.intervention import InterventionHarness
 from backend.recommender.pipeline import HybridPipeline
 from backend.recommender.selector import PAECSelector
-
-_RANKERS = ("popularity", "itemknn", "bm25", "semantic", "hybrid")
 
 
 @dataclass(frozen=True)
@@ -32,8 +31,9 @@ def evaluate_cases(
     *,
     checkpoint_path: Path | None = None,
     paec_limit: int = 0,
+    progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
-    """Evaluate frozen rankers and optionally checkpoint per-query results."""
+    """Evaluate frozen rankers, checkpoint results, and report progress."""
     if paec_limit < 0:
         raise ValueError("paec_limit must be non-negative")
 
@@ -46,10 +46,21 @@ def evaluate_cases(
 
     completed_ids = {str(record["query_id"]) for record in records}
 
-    for case in cases:
+    total_cases = len(cases)
+
+    for index, case in enumerate(cases, start=1):
         if case.query_id in completed_ids:
+            _report_progress(
+                progress,
+                f"[{index}/{total_cases}] Skipping query {case.query_id} "
+                "(already checkpointed)",
+            )
             continue
 
+        _report_progress(
+            progress,
+            f"[{index}/{total_cases}] Processing query {case.query_id}",
+        )
         started_at = perf_counter()
         factual = pipeline.run(case.profile)
         latency_ms = (perf_counter() - started_at) * 1000.0
@@ -58,9 +69,11 @@ def evaluate_cases(
             "popularity": _popularity_ranking(bundle, case.profile, 50),
             "itemknn": _itemknn_ranking(bundle, case.profile, 50),
             "bm25": _branch_ranking(factual, "bm25", 50),
-            "semantic": _branch_ranking(factual, "semantic", 50),
             "hybrid": tuple(item.item_id for item in factual.ranking[:50]),
         }
+        if "semantic" in pipeline.config.weights:
+            rankings["semantic"] = _branch_ranking(factual, "semantic", 50)
+
         paec = None
 
         if len(records) < paec_limit and factual.ranking:
@@ -85,13 +98,28 @@ def evaluate_cases(
         completed_ids.add(case.query_id)
 
         _append_checkpoint(checkpoint_path, record)
+        _report_progress(
+            progress,
+            f"[{index}/{total_cases}] Completed query {case.query_id} "
+            f"in {latency_ms:.1f} ms",
+        )
 
     requested_ids = frozenset(query_ids)
     selected_records = tuple(
         record for record in records if str(record["query_id"]) in requested_ids
     )
 
-    return _summarize(selected_records, len(bundle.item_to_index))
+    rankers = ("popularity", *pipeline.config.weights, "hybrid")
+
+    return _summarize(selected_records, len(bundle.item_to_index), rankers)
+
+
+def _report_progress(
+    progress: Callable[[str], None] | None,
+    message: str,
+) -> None:
+    if progress is not None:
+        progress(message)
 
 
 def _popularity_ranking(
@@ -192,16 +220,17 @@ def _validate_checkpoint_contract(
 def _summarize(
     records: tuple[dict[str, Any], ...],
     catalog_size: int,
+    ranker_names: tuple[str, ...],
 ) -> dict[str, Any]:
     rankers = {
         ranker: _ranker_metrics(records, ranker, catalog_size)
-        for ranker in _RANKERS
+        for ranker in ranker_names
     }
     positive_records = tuple(
         record for record in records if float(record["target_rating"]) >= 4.0
     )
 
-    for ranker in _RANKERS:
+    for ranker in ranker_names:
         rankers[ranker]["positive_target_slice"] = _ranker_metrics(
             positive_records,
             ranker,

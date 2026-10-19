@@ -32,9 +32,14 @@ class PipelineConfig:
         if any(isinstance(value, bool) or value <= 0 for value in integer_values):
             raise ValueError("Pipeline integer settings must be positive")
 
-        expected = {"itemknn", "bm25", "semantic"}
-        if set(self.weights) != expected:
-            raise ValueError("Fusion weights must define all three branches")
+        required = {"itemknn", "bm25"}
+        allowed = required | {"semantic"}
+        configured = set(self.weights)
+
+        if not required <= configured or not configured <= allowed:
+            raise ValueError(
+                "Fusion weights must define itemknn and bm25, with optional semantic"
+            )
 
         if any(value < 0.0 for value in self.weights.values()):
             raise ValueError("Fusion weights must be non-negative")

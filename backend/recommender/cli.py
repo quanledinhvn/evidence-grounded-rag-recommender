@@ -14,6 +14,10 @@ from dotenv import load_dotenv
 
 from backend.item_knn import ItemKNNBundle
 from backend.recommender.intervention import InterventionHarness
+from backend.recommender.llm_explanation import (
+    ExplanationSource,
+    generate_llm_explanation,
+)
 from backend.recommender.models import EvidenceRecord, PipelineConfig
 from backend.recommender.opensearch_retrievers import (
     OpenSearchBM25ContributionRetriever,
@@ -40,8 +44,11 @@ def run_recommendation(
     pool_size: int = 50,
     evidence_budget: int = 3,
     include_paec: bool = True,
+    include_semantic: bool = True,
+    include_llm_explanation: bool = False,
+    llm_model: str = "gpt-6-luna",
 ) -> dict[str, Any]:
-    """Run the frozen three-branch recommender for one serialized profile."""
+    """Run the frozen recommender for one serialized profile."""
     profile = load_profile(profile_path)
     bundle = ItemKNNBundle.load(item_knn_bundle_path)
 
@@ -54,15 +61,19 @@ def run_recommendation(
         bundle.manifest,
         search_manifest,
     )
+    weights = {"itemknn": 0.5, "bm25": 0.5}
+    if include_semantic:
+        weights = {
+            "itemknn": 1.0 / 3.0,
+            "bm25": 1.0 / 3.0,
+            "semantic": 1.0 / 3.0,
+        }
+
     config = PipelineConfig(
         top_k=top_k,
         pool_size=pool_size,
         evidence_budget=evidence_budget,
-        weights={
-            "itemknn": 1.0 / 3.0,
-            "bm25": 1.0 / 3.0,
-            "semantic": 1.0 / 3.0,
-        },
+        weights=weights,
     )
     embedding_model = str(search_manifest.get("embedding_model") or "").strip()
     if not embedding_model:
@@ -77,12 +88,14 @@ def run_recommendation(
             gateway,
             profile.artifact_version,
         ),
-        "semantic": OpenSearchSemanticContributionRetriever(
+    }
+    if include_semantic:
+        retrievers["semantic"] = OpenSearchSemanticContributionRetriever(
             gateway,
             profile.artifact_version,
             embedding_model,
-        ),
-    }
+        )
+
     pipeline = HybridPipeline(
         retrievers,
         config,
@@ -94,6 +107,8 @@ def run_recommendation(
 
     selection = None
     explanation = None
+    llm_explanation = None
+    evidence: tuple[EvidenceRecord, ...] = ()
 
     if include_paec and factual.ranking:
         target_item_id = factual.ranking[0].item_id
@@ -107,6 +122,17 @@ def run_recommendation(
             evidence,
         )
 
+    if include_llm_explanation and factual.ranking:
+        target_item_id = factual.ranking[0].item_id
+        llm_explanation = generate_llm_explanation(
+            target_item_id,
+            selection.certificate if selection is not None else None,
+            evidence,
+            fallback_sources=_llm_sources(profile, factual),
+            candidate_evidence=_candidate_evidence(factual, target_item_id),
+            model=llm_model,
+        )
+
     elapsed_ms = (perf_counter() - started_at) * 1000.0
     ranking = tuple(factual.ranking[:top_k])
 
@@ -117,12 +143,14 @@ def run_recommendation(
         "as_of": profile.as_of,
         "phase": profile.phase,
         "config": _json_value(config),
+        "semantic_enabled": include_semantic,
         "artifact_manifest_hash": artifact_hash,
         "ranking": _json_value(ranking),
         "candidate_count": len(factual.candidate_ids),
         "invalid_reasons": list(factual.invalid_reasons),
         "selection": _json_value(selection),
         "explanation": _json_value(explanation),
+        "llm_explanation": llm_explanation,
         "latency_ms": elapsed_ms,
     }
 
@@ -151,6 +179,10 @@ def main(argv: list[str] | None = None) -> int:
         pool_size=args.pool_size,
         evidence_budget=args.evidence_budget,
         include_paec=not args.skip_paec,
+        include_semantic=args.semantic,
+        include_llm_explanation=args.llm_explanation,
+        llm_model=args.llm_model
+        or os.environ.get("OPENAI_EXPLANATION_MODEL", "gpt-6-luna"),
     )
 
     if args.output is None:
@@ -188,6 +220,22 @@ def _build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--evidence-budget", type=int, default=3)
     parser.add_argument("--skip-paec", action="store_true")
+    parser.add_argument(
+        "--semantic",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable semantic retrieval (default: enabled; use --no-semantic to disable)",
+    )
+    parser.add_argument(
+        "--llm-explanation",
+        action="store_true",
+        help="Generate a grounded explanation with the OpenAI Responses API",
+    )
+    parser.add_argument(
+        "--llm-model",
+        default=None,
+        help="OpenAI model used only with --llm-explanation",
+    )
 
     return parser
 
@@ -272,6 +320,47 @@ def _evidence(
     )
 
     return tuple(records)
+
+
+def _llm_sources(
+    profile: object,
+    factual: object,
+) -> tuple[ExplanationSource, ...]:
+    if not factual.ranking:
+        return ()
+
+    contributions = factual.ranking[0].source_attribution
+    signals = {
+        signal.history_id: signal
+        for signal in profile.positive_signals
+        if signal.history_id in contributions
+    }
+    source_ids = sorted(
+        signals,
+        key=lambda source_id: (-contributions[source_id], source_id),
+    )
+    return tuple(
+        ExplanationSource(
+            history_id=source_id,
+            item_id=signals[source_id].item_id,
+            text=" ".join(field.text for field in signals[source_id].text_fields),
+            contribution=float(contributions[source_id]),
+        )
+        for source_id in source_ids[:3]
+    )
+
+
+def _candidate_evidence(
+    factual: object,
+    item_id: str,
+) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            atom.candidate_span
+            for atom in factual.atoms
+            if atom.candidate_id == item_id and atom.candidate_span
+        )
+    )
 
 
 def _json_value(value: Any) -> Any:

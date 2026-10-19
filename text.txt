@@ -34,3 +34,21 @@ uv run recsys-item-knn recommend \
   --region ap-southeast-1 \
   --phase test \
   --neighbors 51
+
+./scripts/run-five-user-demo.sh \
+  --llm \
+  --llm-model gpt-4.1-mini \
+  --output-dir artifacts/demo-5-llm
+  
+  .venv/bin/recsys-evaluate \
+  --splits artifacts/movies-tv-2023/splits.parquet \
+  --catalog artifacts/movies-tv-2023/catalog_enriched.parquet \
+  --queries artifacts/movies-tv-2023/queries_test_1000.parquet \
+  --item-knn-bundle runs/item-knn-movies-tv-2023/test/20261015T173128Z/bundle \
+  --search-manifest artifacts/movies-tv-2023/search-index-manifest-v1.json \
+  --output-dir artifacts/eval-test-1000-no-semantic-paec100 \
+  --artifact-version movies-tv-2023 \
+  --sample-size 1000 \
+  --seed 29 \
+  --paec-limit 100 \
+  --no-semantic

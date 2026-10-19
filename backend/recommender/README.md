@@ -2,7 +2,7 @@
 
 Package này hiện thực lõi nghiên cứu trong `research/systemdessign.md`:
 
-- ba retriever ItemKNN, BM25 và semantic trả cả score lẫn provenance theo raw history source;
+- ItemKNN, BM25 và nhánh semantic tùy chọn trả cả score lẫn provenance theo raw history source;
 - candidate union, chuẩn hóa trong query và fusion tất định;
 - full-pipeline removal/retention giữ nguyên factual `seen_item_ids`;
 - signed top-K margin, evaluable-state gate và decision certificate;
@@ -47,6 +47,65 @@ selection = PAECSelector(harness, support_gate=raw_support_gate).select(
     factual.ranking[0].item_id,
 )
 ```
+
+## Bật hoặc tắt semantic search
+
+CLI bật semantic search theo mặc định để giữ tương thích với cấu hình ba nhánh.
+Dùng `--no-semantic` để chỉ chạy ItemKNN và BM25; hai trọng số được chuẩn hóa
+thành `0.5 / 0.5`, semantic retriever không được khởi tạo hoặc gọi:
+
+```bash
+recsys-recommend \
+  --profile artifacts/final/demo_profile.json \
+  --item-knn-bundle artifacts/item-knn-test \
+  --search-manifest artifacts/search/manifest.json \
+  --no-semantic
+```
+
+Evaluation hỗ trợ cùng option để chạy ablation vào hai thư mục output độc lập:
+
+```bash
+recsys-evaluate ... --output-dir artifacts/eval-with-semantic --semantic
+recsys-evaluate ... --output-dir artifacts/eval-without-semantic --no-semantic
+```
+
+Không dùng chung checkpoint giữa hai chế độ vì `config_hash` khác nhau. Kết quả
+và manifest đều ghi `semantic_enabled`; khi tắt, báo cáo không chứa ranker
+`semantic`.
+
+## Sinh lời giải thích bằng LLM
+
+Ranking luôn hoàn tất trước khi gọi LLM. Khi bật `--llm-explanation`, có hai
+chế độ output được ghi rõ trong trường `mode`:
+
+- `paec_certified`: PAEC có certificate `dual_valid`. Prompt chỉ nhận đúng
+  coalition, provenance và removal/retention certificate đã khóa; LLM phải cite
+  đầy đủ coalition cùng `CERT1`.
+- `retrieval_grounded`: PAEC bị tắt hoặc không có certificate dual-valid. Prompt
+  dùng tối đa ba history source có contribution cao nhất cùng candidate
+  provenance. Nó không được phát biểu claim phảnfactual hoặc causal của PAEC.
+
+LLM không nhận retriever và không thể thay đổi score/rank. Nếu không có evidence
+history phù hợp, kết quả là `abstained` và không gọi API.
+
+Thiết lập `OPENAI_API_KEY` cùng dependency `search`, sau đó chạy:
+
+```bash
+uv run --extra search recsys-recommend \
+  --profile artifacts/movies-tv-2023/profile_example.json \
+  --item-knn-bundle runs/item-knn-movies-tv-2023/test/20261015T173128Z/bundle \
+  --search-manifest artifacts/movies-tv-2023/search-index-manifest-v1.json \
+  --no-semantic \
+  --llm-explanation \
+  --llm-model gpt-6-luna \
+  --output artifacts/query/recommendation-with-llm.json
+```
+
+Trường `llm_explanation` trong output có `status`, `text`, `citations`, `model`
+và `reason`. API request dùng Structured Outputs và `store=False`.
+`paec_certified` là verbalization của certificate đã được xác minh cơ học trong
+trường `explanation`; `retrieval_grounded` chỉ là lời giải thích theo evidence
+retrieval, không phải chứng nhận PAEC.
 
 `FrozenContributionRetriever` dành cho fixture và replay artifact. Ba adapter triển
 khai dùng cho experiment là:

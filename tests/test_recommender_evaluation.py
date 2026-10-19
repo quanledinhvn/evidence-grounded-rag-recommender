@@ -130,6 +130,66 @@ class RecommenderEvaluationTests(unittest.TestCase):
         self.assertEqual(first["rankers"]["hybrid"]["hr_at_10"], 1.0)
         self.assertGreater(first["rankers"]["hybrid"]["ndcg_at_10"], 0.0)
 
+    def test_reports_each_query_start_and_completion(self) -> None:
+        messages: list[str] = []
+        cases = (
+            EvaluationCase("q1", _profile(), "c1", 5.0),
+            EvaluationCase("q2", _profile(), "c2", 4.0),
+        )
+
+        evaluate_cases(
+            _pipeline(),
+            _bundle(),
+            cases,
+            progress=messages.append,
+        )
+
+        self.assertEqual(messages[0], "[1/2] Processing query q1")
+        self.assertTrue(messages[1].startswith("[1/2] Completed query q1 in "))
+        self.assertEqual(messages[2], "[2/2] Processing query q2")
+        self.assertTrue(messages[3].startswith("[2/2] Completed query q2 in "))
+
+    def test_evaluation_omits_semantic_ranker_when_disabled(self) -> None:
+        profile = _profile()
+        bundle = _bundle()
+        retrievers = {
+            "itemknn": FrozenContributionRetriever(
+                "itemknn",
+                {"H1": {"c1": 3.0}},
+                "artifact-v1",
+            ),
+            "bm25": FrozenContributionRetriever(
+                "bm25",
+                {"H1": {"c2": 2.0}},
+                "artifact-v1",
+            ),
+        }
+        config = PipelineConfig(
+            top_k=2,
+            pool_size=3,
+            evidence_budget=1,
+            weights={"itemknn": 0.5, "bm25": 0.5},
+        )
+        pipeline = HybridPipeline(
+            retrievers,
+            config,
+            artifact_manifest_hash="manifest-v1",
+            fallback_item_ids=("c1", "c2", "c3"),
+        )
+
+        metrics = evaluate_cases(
+            pipeline,
+            bundle,
+            (EvaluationCase("q1", profile, "c1", 5.0),),
+        )
+
+        self.assertEqual(set(metrics["rankers"]), {
+            "popularity",
+            "itemknn",
+            "bm25",
+            "hybrid",
+        })
+
 
 def _pipeline() -> HybridPipeline:
     retrievers = {
