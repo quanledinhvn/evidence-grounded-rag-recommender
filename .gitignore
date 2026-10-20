@@ -1,0 +1,24 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Local raw datasets (CSV splits, review and metadata JSONL)
+dataset/
+.DS_Store
+
+# Secrets (GEMINI_API_KEY); .env.example shows the format
+.env
+
+# Agent instructions and working notes (kept locally only; public docs live in README.md and docs/)
+AGENTS.md
+CLAUDE.md
+
+# Editor settings and large reference PDFs (kept locally only)
+.vscode/
+docs/references/*.pdf
+
+# Generated data/model artifacts
+artifacts/
+runs/
